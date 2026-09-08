@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="AISPY ALERTS — AI-agent-ready trading alerts. Subscribe to signals written for agents, wire your own agent to your Robinhood account. Signals only — we never execute trades." />
+  <title>AISPY ALERTS — Trade with AI without being a trader</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top" aria-label="AISPY ALERTS home">
+        <img src="assets/logo.jpeg" alt="AISPY ALERTS" width="160" height="160" />
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="#how">How it works</a>
+        <a href="#disclaimer">Disclaimer</a>
+        <a class="nav-cta" href="#waitlist">Get the alerts</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="container hero-inner">
+        <p class="eyebrow">AI-agent-ready trading alerts</p>
+        <h1>Trade with AI — without being a trader.</h1>
+        <p class="lede">
+          Subscribe to alerts written for AI agents. Connect your own agent to your own Robinhood account.
+          You keep control. We sell the signals — never the trades.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#waitlist">Get the alerts</a>
+          <a class="btn btn-ghost" href="#how">See how it works</a>
+        </div>
+        <ul class="hero-points" aria-label="Highlights">
+          <li>Built for non-traders chasing side income</li>
+          <li>Your agent. Your brokerage. Your rules.</li>
+          <li>Signals only — zero execution on our side</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="how">
+      <div class="container">
+        <h2>How AISPY ALERTS works</h2>
+        <p class="section-intro">Three steps. No day-trading degree required.</p>
+        <div class="cards">
+          <article class="card">
+            <span class="step" aria-hidden="true">01</span>
+            <h3>Alerts written for agents</h3>
+            <p>
+              Every alert is structured so an AI agent can parse it cleanly — ticker, direction, timing, and context —
+              not a vague tip buried in a chat dump.
+            </p>
+          </article>
+          <article class="card">
+            <span class="step" aria-hidden="true">02</span>
+            <h3>You wire your agent</h3>
+            <p>
+              Point your own AI agent at the feed, then connect that agent to <strong>your</strong> Robinhood account.
+              You own the credentials, the risk settings, and the final say.
+            </p>
+          </article>
+          <article class="card">
+            <span class="step" aria-hidden="true">03</span>
+            <h3>Side income, your way</h3>
+            <p>
+              Monetization is the alert subscription. We don’t place trades, manage accounts, or take a cut of your fills —
+              your agent acts (or doesn’t) on your terms.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt" id="disclaimer">
+      <div class="container">
+        <div class="disclaimer">
+          <h2>Important disclaimer</h2>
+          <p class="disclaimer-bold">
+            AISPY ALERTS provides trading <em>signals only</em>. We do not execute trades, manage portfolios,
+            or control any brokerage account. We hold <strong>no liability</strong> for any trades you or your
+            AI agent place, including losses. Past signals are not a guarantee of future results. Trading involves risk
+            of loss. This is not financial, investment, or legal advice.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="waitlist">
+      <div class="container waitlist-inner">
+        <h2>Join the waitlist</h2>
+        <p class="section-intro">Be first when AISPY ALERTS opens. No spam — just launch updates.</p>
+        <form class="waitlist-form" name="waitlist" method="POST" data-netlify="true" netlify-honeypot="bot-field" action="#">
+          <input type="hidden" name="form-name" value="waitlist" />
+          <p class="visually-hidden">
+            <label>Don’t fill this out: <input name="bot-field" tabindex="-1" autocomplete="off" /></label>
+          </p>
+          <div class="form-row">
+            <label for="name">Name</label>
+            <input id="name" name="name" type="text" autocomplete="name" required placeholder="Your name" />
+          </div>
+          <div class="form-row">
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@email.com" />
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">Get the alerts</button>
+          <p class="form-note">Static-host friendly. Hook this form to Formspree, Netlify Forms, or your backend when you go live.</p>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <img class="footer-logo" src="assets/logo.jpeg" alt="" width="72" height="72" />
+      <p>&copy; <span id="year"></span> AISPY ALERTS. Signals only. Not financial advice.</p>
+    </div>
+  </footer>
+
+  <script>
+    document.getElementById("year").textContent = new Date().getFullYear();
+    document.querySelector(".waitlist-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var btn = this.querySelector('button[type="submit"]');
+      btn.textContent = "You’re on the list — thanks!";
+      btn.disabled = true;
+      this.reset();
+    });
+  </script>
+</body>
+</html>
