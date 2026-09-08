@@ -1,4 +1,4 @@
-# AISPY ALERTS
+# AISPYALERTS
 
 One-page landing site for AI-agent-ready trading alerts. Static HTML/CSS — ready for GitHub Pages.
 
