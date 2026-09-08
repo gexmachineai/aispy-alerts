@@ -21,7 +21,7 @@
       <nav class="nav" aria-label="Primary">
         <a href="#how">How it works</a>
         <a href="#disclaimer">Disclaimer</a>
-        <a class="nav-cta" href="#waitlist">Get the alerts</a>
+        <a class="nav-cta" href="#subscribe">Subscribe now</a>
       </nav>
     </div>
   </header>
@@ -36,7 +36,7 @@
           You keep control. We sell the signals — never the trades.
         </p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="#waitlist">Get the alerts</a>
+          <a class="btn btn-primary" href="#subscribe">Subscribe now</a>
           <a class="btn btn-ghost" href="#how">See how it works</a>
         </div>
         <ul class="hero-points" aria-label="Highlights">
@@ -72,8 +72,8 @@
             <span class="step" aria-hidden="true">03</span>
             <h3>Get the alerts</h3>
             <p>
-              Join the waitlist to get AISPYALERTS when we open — agent-ready signals delivered so your setup can act.
-              <a href="#waitlist">Sign up below</a> and be first in line.
+              Follow us on X for free alerts, or subscribe for email alerts delivered straight to your agent.
+              <a href="#subscribe">Subscribe now</a> below.
             </p>
           </article>
         </div>
@@ -94,15 +94,20 @@
       </div>
     </section>
 
-    <section class="section" id="waitlist">
+    <section class="section" id="subscribe">
       <div class="container waitlist-inner">
-        <h2>Join the waitlist</h2>
-        <p class="section-intro">Be first when AISPYALERTS opens. No spam — just launch updates.</p>
-        <form class="waitlist-form" name="waitlist" method="POST" data-netlify="true" netlify-honeypot="bot-field" action="#">
-          <input type="hidden" name="form-name" value="waitlist" />
+        <h2>Subscribe now</h2>
+        <p class="section-intro">Free alerts on X, or email alerts delivered straight to your agent.</p>
+        <div class="subscribe-paths">
+          <a class="btn btn-ghost btn-block x-follow" href="https://x.com/AISPYALERTS" target="_blank" rel="noopener noreferrer">Follow us on X for free alerts</a>
+          <p class="or-divider" aria-hidden="true">or</p>
+        </div>
+        <form class="waitlist-form" name="subscribe" method="POST" data-netlify="true" netlify-honeypot="bot-field" action="#">
+          <input type="hidden" name="form-name" value="subscribe" />
           <p class="visually-hidden">
             <label>Don’t fill this out: <input name="bot-field" tabindex="-1" autocomplete="off" /></label>
           </p>
+          <p class="form-lead">Email alerts straight to your agent</p>
           <div class="form-row">
             <label for="name">Name</label>
             <input id="name" name="name" type="text" autocomplete="name" required placeholder="Your name" />
@@ -111,8 +116,8 @@
             <label for="email">Email</label>
             <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@email.com" />
           </div>
-          <button class="btn btn-primary btn-block" type="submit">Get the alerts</button>
-          <p class="form-note">Static-host friendly. Hook this form to Formspree, Netlify Forms, or your backend when you go live.</p>
+          <button class="btn btn-primary btn-block" type="submit">Subscribe now</button>
+          <p class="form-note">No spam. Agent-ready alert emails only.</p>
         </form>
       </div>
     </section>
@@ -130,7 +135,7 @@
     document.querySelector(".waitlist-form").addEventListener("submit", function (e) {
       e.preventDefault();
       var btn = this.querySelector('button[type="submit"]');
-      btn.textContent = "You’re on the list — thanks!";
+      btn.textContent = "Subscribed — thanks!";
       btn.disabled = true;
       this.reset();
     });
