@@ -6,7 +6,9 @@
 
 const ALLOWED_ORIGINS = new Set([
   "https://aispyalerts.com",
+  "http://aispyalerts.com",
   "https://www.aispyalerts.com",
+  "http://www.aispyalerts.com",
   "https://gexmachineai.github.io",
   "http://127.0.0.1:8080",
   "http://localhost:8080",
