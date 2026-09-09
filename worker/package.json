@@ -1,0 +1,17 @@
+{
+  "name": "aispyalerts-api",
+  "private": true,
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create aispyalerts-subscribers",
+    "db:migrate:local": "wrangler d1 execute aispyalerts-subscribers --local --file=./schema.sql",
+    "db:migrate:remote": "wrangler d1 execute aispyalerts-subscribers --remote --file=./schema.sql",
+    "send-alert": "node scripts/send-alert.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.28.0"
+  }
+}

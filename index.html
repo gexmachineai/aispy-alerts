@@ -102,22 +102,27 @@
           <a class="btn btn-ghost btn-block x-follow" href="https://x.com/AISPYALERTS" target="_blank" rel="noopener noreferrer">Follow us on 𝕏 for free alerts</a>
           <p class="or-divider" aria-hidden="true">or</p>
         </div>
-        <form class="waitlist-form" name="subscribe" method="POST" data-netlify="true" netlify-honeypot="bot-field" action="#">
-          <input type="hidden" name="form-name" value="subscribe" />
-          <p class="visually-hidden">
-            <label>Don’t fill this out: <input name="bot-field" tabindex="-1" autocomplete="off" /></label>
-          </p>
-          <p class="form-lead">Email alerts straight to your agent</p>
+        <form class="waitlist-form" id="subscribe-form" name="subscribe" method="POST" action="#" novalidate>
+          <p class="form-lead">Email alerts straight to your agent (webhook delivery)</p>
           <div class="form-row">
             <label for="name">Name</label>
-            <input id="name" name="name" type="text" autocomplete="name" required placeholder="Your name" />
+            <input id="name" name="name" type="text" autocomplete="name" placeholder="Your name" />
           </div>
           <div class="form-row">
             <label for="email">Email</label>
             <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@email.com" />
           </div>
+          <div class="form-row">
+            <label for="webhookUrl">Webhook URL</label>
+            <input id="webhookUrl" name="webhookUrl" type="url" inputmode="url" required placeholder="https://your-agent.example/webhook" />
+          </div>
+          <div class="form-row">
+            <label for="senderKey">Sender key</label>
+            <input id="senderKey" name="senderKey" type="password" autocomplete="off" required minlength="8" placeholder="Min 8 characters" />
+          </div>
           <button class="btn btn-primary btn-block" type="submit">Subscribe now</button>
-          <p class="form-note">No spam. Agent-ready alert emails only.</p>
+          <div id="form-message" class="form-message" role="status" aria-live="polite" hidden></div>
+          <p class="form-note">Sender key is stored encrypted and never shown again. Used only to authorize alert delivery to your webhook.</p>
         </form>
       </div>
     </section>
@@ -132,12 +137,82 @@
 
   <script>
     document.getElementById("year").textContent = new Date().getFullYear();
-    document.querySelector(".waitlist-form").addEventListener("submit", function (e) {
+
+    // Set after Worker deploy, e.g. https://aispyalerts-api.xxx.workers.dev
+    const API_BASE = "";
+
+    const form = document.getElementById("subscribe-form");
+    const msg = document.getElementById("form-message");
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    function showMessage(text, kind) {
+      msg.hidden = false;
+      msg.textContent = text;
+      msg.className = "form-message " + kind;
+    }
+
+    function isHttpsUrl(value) {
+      try {
+        const u = new URL(value);
+        return u.protocol === "https:";
+      } catch {
+        return false;
+      }
+    }
+
+    form.addEventListener("submit", async function (e) {
       e.preventDefault();
-      var btn = this.querySelector('button[type="submit"]');
-      btn.textContent = "Subscribed — thanks!";
+
+      const name = (form.name.value || "").trim();
+      const email = (form.email.value || "").trim();
+      const webhookUrl = (form.webhookUrl.value || "").trim();
+      const senderKey = form.senderKey.value || "";
+
+      if (!email || !emailRe.test(email)) {
+        showMessage("Please enter a valid email address.", "error");
+        return;
+      }
+      if (!webhookUrl || !isHttpsUrl(webhookUrl)) {
+        showMessage("Webhook URL must be a valid https:// address.", "error");
+        return;
+      }
+      if (!senderKey || senderKey.length < 8) {
+        showMessage("Sender key must be at least 8 characters.", "error");
+        return;
+      }
+
+      if (!API_BASE) {
+        showMessage("Backend URL not configured yet. Form fields look valid — set API_BASE after Worker deploy.", "error");
+        return;
+      }
+
+      const btn = form.querySelector('button[type="submit"]');
+      const prev = btn.textContent;
       btn.disabled = true;
-      this.reset();
+      btn.textContent = "Subscribing…";
+      msg.hidden = true;
+
+      try {
+        const res = await fetch(API_BASE.replace(/\/+$/, "") + "/api/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, email, webhookUrl, senderKey }),
+        });
+        let data = null;
+        try { data = await res.json(); } catch (_) {}
+        if (!res.ok || !data || !data.ok) {
+          const err = (data && data.error) || ("Request failed (" + res.status + ")");
+          showMessage(err, "error");
+          return;
+        }
+        form.senderKey.value = "";
+        showMessage("Subscribed — alerts will POST to your webhook.", "success");
+      } catch (err) {
+        showMessage("Network error. Please try again.", "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
     });
   </script>
 </body>
