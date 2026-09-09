@@ -12,6 +12,6 @@
     "send-alert": "node scripts/send-alert.mjs"
   },
   "devDependencies": {
-    "wrangler": "^4.28.0"
+    "wrangler": "^3.114.5"
   }
 }
