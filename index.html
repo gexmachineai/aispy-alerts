@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="AISPYALERTS — AI-agent-ready trading alerts. Subscribe to signals written for agents, wire your own agent to your Robinhood account. Signals only — we never execute trades." />
   <title>AISPYALERTS — Trade with AI without needing to be a full-time trader</title>
-  <link rel="stylesheet" href="styles.css?v=xai-bot" />
+  <link rel="stylesheet" href="styles.css?v=connect3" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
@@ -21,7 +21,7 @@
       <nav class="nav" aria-label="Primary">
         <a href="#how">How it works</a>
         <a href="#setup">Setup help</a>
-        <a href="#rhts">DIY bot</a>
+        <a href="#rhts">Connect bot</a>
         <a href="#disclaimer">Disclaimer</a>
         <a class="nav-cta" href="#subscribe">Subscribe now</a>
       </nav>
@@ -111,13 +111,13 @@
       <div class="container">
         <div class="setup-card">
           <h2>Bot setup help</h2>
-          <p class="section-intro">Optional one-time consulting if you want a hand connecting your agent.</p>
-          <ul class="setup-points">
-            <li><strong>Know how to link alerts to Grok Bot already?</strong> You’re good — subscribe with your webhook URL and sender key. No installation fee.</li>
-            <li><strong>Want us to walk you through it?</strong> One-time setup help to connect your bot to AISPYALERTS alerts (your agent, your account, your confirms).</li>
-          </ul>
-          <p class="setup-note">This is setup assistance only — not trading advice, and we still never execute trades for you.</p>
-          <a class="btn btn-primary" href="https://x.com/AISPYALERTS" target="_blank" rel="noopener noreferrer">Ask about setup on 𝕏</a>
+          <p class="section-intro">Optional one-time consulting if you want a hand with the steps below.</p>
+          <p>
+            Already comfortable wiring Grok Bot? Follow the three steps — <strong>no installation fee</strong>.
+            Want us to walk you through it? Ask about a one-time setup consult on 𝕏.
+          </p>
+          <p class="setup-note">Setup assistance only — not trading advice. We never execute trades for you.</p>
+          <a class="btn btn-ghost" href="https://x.com/AISPYALERTS" target="_blank" rel="noopener noreferrer">Ask about setup on 𝕏</a>
         </div>
       </div>
     </section>
@@ -126,23 +126,29 @@
     <section class="section section-alt" id="rhts">
       <div class="container">
         <div class="setup-card">
-          <h2>Optional: DIY automation bot</h2>
-          <p class="section-intro">Free template if you want alerts to wake your own trading bot — not part of the alert product.</p>
-          <p>
-            Import the free <strong>RHTS</strong> template into Grok Bot / Cursor. It’s a personal tool you configure yourself
-            (webhook + Robinhood Agentic + your <code>BOT_PROFILE</code>). You confirm orders unless you opt into auto-send.
+          <h2>Connect your bot in 3 steps</h2>
+          <p class="section-intro">
+            Free optional DIY template (RHTS) — not part of the alert product.
+            Not financial advice. Not a signal service. Not managed trading.
           </p>
-          <ul class="setup-points">
-            <li>Optional free tool — separate from AISPYALERTS subscriptions</li>
-            <li>Not financial advice. Not a signal service. Not managed trading.</li>
-            <li>You set your own profile, size, and confirms</li>
-          </ul>
-          <p class="setup-note">
-            After setup, paste your bot’s webhook URL and sender key in the <a href="#subscribe">Subscribe</a> form
-            so AISPYALERTS can reach your bot.
-          </p>
-          <a class="btn btn-primary" id="rhts-import" href="https://x.ai/bot/w4Xau8t-tAX33K33pzz2S" target="_blank" rel="noopener noreferrer">Open in GrokBot</a>
-                  </div>
+          <ol class="connect-steps">
+            <li>
+              <strong>Open the bot</strong> — import the free template in Grok Bot.
+              <div class="step-action">
+                <a class="btn btn-primary" id="rhts-import" href="https://x.ai/bot/w4Xau8t-tAX33K33pzz2S" target="_blank" rel="noopener noreferrer">Open in GrokBot</a>
+              </div>
+            </li>
+            <li>
+              <strong>Paste webhook URL + sender key</strong> into the
+              <a href="#subscribe">Subscribe</a> form so AISPYALERTS can reach your bot.
+            </li>
+            <li>
+              <strong>Fill your <code>BOT_PROFILE</code> questionnaire</strong> in the bot
+              (sizing, confirms, and your preferences).
+            </li>
+          </ol>
+          <p class="setup-note">You confirm orders unless you opt into auto-send. Your agent, your account, your rules.</p>
+        </div>
       </div>
     </section>
 
