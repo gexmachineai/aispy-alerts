@@ -498,3 +498,22 @@ a:hover {
   color: var(--muted);
   font-size: 0.95rem;
 }
+
+.flow-figure {
+  margin: 0 0 2rem;
+  text-align: center;
+}
+
+.flow-figure img {
+  width: min(100%, 720px);
+  margin-inline: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: #000;
+}
+
+.flow-figure figcaption {
+  margin-top: 0.75rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
