@@ -499,14 +499,39 @@ a:hover {
   font-size: 0.95rem;
 }
 
-.flow-figure {
-  margin: 0.5rem auto 2.25rem;
-  text-align: center;
-  max-width: 560px;
+.flow-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 1.75rem 2rem;
+  align-items: center;
+  margin: 0 0 2.25rem;
 }
 
+.flow-copy h3 {
+  margin: 0 0 0.75rem;
+  font-family: var(--display);
+  font-size: 1.15rem;
+  letter-spacing: 0.03em;
+}
+
+.flow-copy p {
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-size: 1rem;
+}
+
+.flow-copy p:last-child {
+  margin-bottom: 0;
+}
+
+.flow-figure {
+  margin: 0;
+  text-align: center;
+}
+
+
 .flow-figure img {
-  width: min(100%, 520px);
+  width: min(100%, 100%);
   margin-inline: auto;
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -519,4 +544,14 @@ a:hover {
   color: var(--muted);
   font-size: 0.92rem;
   letter-spacing: 0.01em;
+}
+
+@media (max-width: 800px) {
+  .flow-split {
+    grid-template-columns: 1fr;
+  }
+
+  .flow-figure {
+    order: -1;
+  }
 }

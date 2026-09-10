@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="AISPYALERTS — AI-agent-ready trading alerts. Subscribe to signals written for agents, wire your own agent to your Robinhood account. Signals only — we never execute trades." />
   <title>AISPYALERTS — Trade with AI without needing to be a full-time trader</title>
-  <link rel="stylesheet" href="styles.css?v=520" />
+  <link rel="stylesheet" href="styles.css?v=flow-split" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
@@ -51,11 +51,23 @@
     <section class="section" id="how">
       <div class="container">
         <h2>How AISPYALERTS works</h2>
-        <p class="section-intro">Three steps. No day-trading degree required. See the path at a glance, then the details below.</p>
-        <figure class="flow-figure">
-          <img src="assets/flow.jpeg?v=3" alt="AISPYALERTS sends alerts to Grok Bot, which connects to your Robinhood account" width="960" height="540" loading="lazy" />
-          <figcaption>AISPYALERTS → your Grok Bot → your Robinhood — you keep the keys.</figcaption>
-        </figure>
+        <p class="section-intro">Three steps. No day-trading degree required.</p>
+        <div class="flow-split">
+          <div class="flow-copy">
+            <h3>The path to Robinhood</h3>
+            <p>
+              AISPYALERTS sends agent-ready alerts to <strong>your</strong> Grok Bot. Your bot reads the signal,
+              then acts through <strong>your</strong> Robinhood connection — with your size, your rules, and your confirmation.
+            </p>
+            <p>
+              We never log into your brokerage and never place trades for you. Alerts in, your agent decides what happens next.
+            </p>
+          </div>
+          <figure class="flow-figure">
+            <img src="assets/flow.jpeg?v=4" alt="AISPYALERTS sends alerts to Grok Bot, which connects to your Robinhood account" width="960" height="540" loading="lazy" />
+            <figcaption>AISPYALERTS → Grok Bot → Robinhood</figcaption>
+          </figure>
+        </div>
         <div class="cards">
           <article class="card">
             <span class="step" aria-hidden="true">01</span>
