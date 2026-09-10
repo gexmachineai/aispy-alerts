@@ -505,7 +505,7 @@ a:hover {
 }
 
 .flow-figure img {
-  width: min(100%, 420px);
+  width: min(100%, 340px);
   margin-inline: auto;
   border-radius: var(--radius);
   border: 1px solid var(--border);
