@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="AISPYALERTS — AI-agent-ready trading alerts. Subscribe to signals written for agents, wire your own agent to your Robinhood account. Signals only — we never execute trades." />
   <title>AISPYALERTS — Trade with AI without needing to be a full-time trader</title>
-  <link rel="stylesheet" href="styles.css?v=checklist" />
+  <link rel="stylesheet" href="styles.css?v=rhts" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
@@ -21,6 +21,7 @@
       <nav class="nav" aria-label="Primary">
         <a href="#how">How it works</a>
         <a href="#setup">Setup help</a>
+        <a href="#rhts">DIY bot</a>
         <a href="#disclaimer">Disclaimer</a>
         <a class="nav-cta" href="#subscribe">Subscribe now</a>
       </nav>
@@ -117,6 +118,31 @@
           </ul>
           <p class="setup-note">This is setup assistance only — not trading advice, and we still never execute trades for you.</p>
           <a class="btn btn-primary" href="https://x.com/AISPYALERTS" target="_blank" rel="noopener noreferrer">Ask about setup on 𝕏</a>
+        </div>
+      </div>
+    </section>
+
+
+    <section class="section section-alt" id="rhts">
+      <div class="container">
+        <div class="setup-card">
+          <h2>Optional: DIY automation bot</h2>
+          <p class="section-intro">Free template if you want alerts to wake your own trading bot — not part of the alert product.</p>
+          <p>
+            Import the free <strong>RHTS</strong> template into Grok Bot / Cursor. It’s a personal tool you configure yourself
+            (webhook + Robinhood Agentic + your <code>BOT_PROFILE</code>). You confirm orders unless you opt into auto-send.
+          </p>
+          <ul class="setup-points">
+            <li>Optional free tool — separate from AISPYALERTS subscriptions</li>
+            <li>Not financial advice. Not a signal service. Not managed trading.</li>
+            <li>You set your own profile, size, and confirms</li>
+          </ul>
+          <p class="setup-note">
+            After setup, paste your bot’s webhook URL and sender key in the <a href="#subscribe">Subscribe</a> form
+            so AISPYALERTS can reach your bot.
+          </p>
+          <a class="btn btn-primary" id="rhts-import" href="YOUR_RHTS_SHARE_URL">Import RHTS</a>
+          <p class="form-note" style="margin-top:0.75rem">Import link placeholder — swap in the published share URL when ready.</p>
         </div>
       </div>
     </section>
