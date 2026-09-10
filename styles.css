@@ -469,3 +469,32 @@ a:hover {
   background: rgba(180, 40, 40, 0.25);
   border: 1px solid #8a3030;
 }
+
+.setup-card {
+  max-width: 720px;
+  margin-inline: auto;
+  padding: 1.75rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.setup-points {
+  margin: 0 0 1.25rem;
+  padding-left: 1.15rem;
+  color: var(--muted);
+}
+
+.setup-points li {
+  margin-bottom: 0.75rem;
+}
+
+.setup-points strong {
+  color: var(--text);
+}
+
+.setup-note {
+  margin: 0 0 1.25rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
