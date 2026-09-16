@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="AISPYALERTS — AI-agent-ready trading alerts. Subscribe to signals written for agents, wire your own agent to your Robinhood account. Signals only — we never execute trades." />
   <title>AISPYALERTS — Trade with AI without needing to be a full-time trader</title>
-  <link rel="stylesheet" href="styles.css?v=aispyalerts" />
+  <link rel="stylesheet" href="styles.css?v=step4ask" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
@@ -98,7 +98,8 @@
             <span class="step" aria-hidden="true">03</span>
             <h3>Get the alerts</h3>
             <p>
-              Follow us on 𝕏 for free alerts, or <a href="#subscribe">subscribe</a> to AISPYALERTS.
+              Follow us on 𝕏 for free alerts, or subscribe for email alerts delivered straight to your agent.
+              <a href="#subscribe">Subscribe now</a> below.
             </p>
           </article>
         </div>
@@ -125,29 +126,30 @@
     <section class="section section-alt" id="rhts">
       <div class="container">
         <div class="setup-card">
-          <h2>Connect your bot</h2>
+          <h2>Connect your bot in 4 steps</h2>
           <p class="section-intro">
-            Optional DIY template — not part of the alert product.
+            Free optional DIY template (RHTS) — not part of the alert product.
             Not financial advice. Not a signal service. Not managed trading.
           </p>
           <ol class="connect-steps">
             <li>
-              <strong>Subscribe</strong> — use the
-              <a href="#subscribe">Subscribe</a> form. Name optional, email required.
-            </li>
-            <li>
-              <strong>Get AISPYALERTS</strong> — alerts come to your email.
-            </li>
-            <li>
-              <strong>Optional: DIY Grok Bot</strong> — open the free template, connect Robinhood Agentic,
-              and set your <code>BOT_PROFILE</code> on <em>your</em> side.
+              <strong>Open the bot</strong> — import the free template in Grok Bot.
               <div class="step-action">
                 <a class="btn btn-primary" id="rhts-import" href="https://x.ai/bot/w4Xau8t-tAX33K33pzz2S" target="_blank" rel="noopener noreferrer">Open in GrokBot</a>
               </div>
             </li>
             <li>
-              <strong>Stay in control</strong> — you confirm orders unless you opt into auto-send.
-              Your agent, your account, your rules.
+              <strong>Connect Robinhood Agentic</strong> — ask Grok Bot to connect your Robinhood Agentic account.
+              It will walk you through linking <em>your</em> brokerage to the bot (you stay in control).
+            </li>
+            <li>
+              <strong>Get your webhook details</strong> — ask Grok Bot where to find your
+              <em>Webhook URL</em> and <em>sender key</em> (or webhook key), then paste both into the
+              <a href="#subscribe">Subscribe</a> form so AISPYALERTS can reach your bot.
+            </li>
+            <li>
+              <strong>Set your <code>BOT_PROFILE</code></strong> — ask Grok Bot for the profile questionnaire / form,
+              then fill it in (sizing, confirms, and your preferences).
             </li>
           </ol>
           <p class="setup-note">You confirm orders unless you opt into auto-send. Your agent, your account, your rules.</p>
@@ -172,13 +174,13 @@
     <section class="section" id="subscribe">
       <div class="container waitlist-inner">
         <h2>Subscribe now</h2>
-        <p class="section-intro">Free alerts on 𝕏, or subscribe to AISPYALERTS by email.</p>
+        <p class="section-intro">Free alerts on 𝕏, or email alerts delivered straight to your agent.</p>
         <div class="subscribe-paths">
           <a class="btn btn-ghost btn-block x-follow" href="https://x.com/AISPYALERTS" target="_blank" rel="noopener noreferrer">Follow us on 𝕏 for free alerts</a>
           <p class="or-divider" aria-hidden="true">or</p>
         </div>
         <form class="waitlist-form" id="subscribe-form" name="subscribe" method="POST" action="#" novalidate>
-          <p class="form-lead">Get AISPYALERTS by email. Name optional — email required.</p>
+          <p class="form-lead">Email alerts straight to your agent (webhook delivery)</p>
           <div class="form-row">
             <label for="name">Name</label>
             <input id="name" name="name" type="text" autocomplete="name" placeholder="Your name" />
@@ -187,8 +189,17 @@
             <label for="email">Email</label>
             <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@email.com" />
           </div>
+          <div class="form-row">
+            <label for="webhookUrl">Webhook URL</label>
+            <input id="webhookUrl" name="webhookUrl" type="url" inputmode="url" required placeholder="https://your-agent.example/webhook" />
+          </div>
+          <div class="form-row">
+            <label for="senderKey">Sender key</label>
+            <input id="senderKey" name="senderKey" type="password" autocomplete="off" required minlength="8" placeholder="Min 8 characters" />
+          </div>
           <button class="btn btn-primary btn-block" type="submit">Subscribe now</button>
           <div id="form-message" class="form-message" role="status" aria-live="polite" hidden></div>
+          <p class="form-note">Sender key is stored encrypted and never shown again. Used only to authorize alert delivery to your webhook.</p>
         </form>
       </div>
     </section>
@@ -217,14 +228,33 @@
       msg.className = "form-message " + kind;
     }
 
+    function isHttpsUrl(value) {
+      try {
+        const u = new URL(value);
+        return u.protocol === "https:";
+      } catch {
+        return false;
+      }
+    }
+
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
 
       const name = (form.name.value || "").trim();
       const email = (form.email.value || "").trim();
+      const webhookUrl = (form.webhookUrl.value || "").trim();
+      const senderKey = form.senderKey.value || "";
 
       if (!email || !emailRe.test(email)) {
         showMessage("Please enter a valid email address.", "error");
+        return;
+      }
+      if (!webhookUrl || !isHttpsUrl(webhookUrl)) {
+        showMessage("Webhook URL must be a valid https:// address.", "error");
+        return;
+      }
+      if (!senderKey || senderKey.length < 8) {
+        showMessage("Sender key must be at least 8 characters.", "error");
         return;
       }
 
@@ -243,7 +273,7 @@
         const res = await fetch(API_BASE.replace(/\/+$/, "") + "/api/subscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, email }),
+          body: JSON.stringify({ name, email, webhookUrl, senderKey }),
         });
         let data = null;
         try { data = await res.json(); } catch (_) {}
@@ -252,7 +282,8 @@
           showMessage(err, "error");
           return;
         }
-        showMessage("Subscribed — you’ll get AISPYALERTS by email.", "success");
+        form.senderKey.value = "";
+        showMessage("Subscribed — alerts will POST to your webhook.", "success");
       } catch (err) {
         showMessage("Network error. Please try again.", "error");
       } finally {

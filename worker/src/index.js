@@ -1,13 +1,12 @@
 /**
- * AISPYALERTS API — email-first subscribe + legacy webhook deliver
+ * AISPYALERTS API — subscribe (webhook + email) + deliver fan-out
  *
- * Primary path: POST /api/subscribe (email + optional name) → D1 + Resend
- *   "Founding Free" segment (BCC fan-out via Alert Spreader / Resend).
- * Legacy: POST /api/deliver still fans out to rows with a usable webhook;
- *   email-only rows (empty webhook_url / empty key) are skipped.
+ * POST /api/subscribe: name, email, webhookUrl, senderKey → D1 (key encrypted)
+ *   and Resend Founding Free enroll when RESEND_API_KEY is set.
+ * POST /api/deliver: Bearer DELIVER_TOKEN → POST alerts to subscriber webhooks
+ *   (skips rows without a usable webhook).
  *
- * Secrets: ENCRYPTION_KEY (base64 32 bytes; only needed for legacy webhook keys),
- *          DELIVER_TOKEN, RESEND_API_KEY (for contact + segment enroll on subscribe)
+ * Secrets: ENCRYPTION_KEY (base64 32 bytes), DELIVER_TOKEN, RESEND_API_KEY
  * Binding: DB (D1)
  */
 
@@ -189,32 +188,25 @@ async function handleSubscribe(request, env, origin) {
 
   const name = body.name != null ? String(body.name).trim() : "";
   const email = body.email != null ? String(body.email).trim().toLowerCase() : "";
-  // Legacy optional fields — ignored for email-first; stored empty when absent
-  const webhookUrlRaw = body.webhookUrl != null ? String(body.webhookUrl).trim() : "";
-  const senderKeyRaw = body.senderKey != null ? String(body.senderKey) : "";
+  const webhookUrl = body.webhookUrl != null ? String(body.webhookUrl).trim() : "";
+  const senderKey = body.senderKey != null ? String(body.senderKey) : "";
 
   if (!email || !isValidEmail(email)) {
     return json({ ok: false, error: "Valid email is required" }, 400, origin);
   }
+  if (!webhookUrl || !isHttpsUrl(webhookUrl)) {
+    return json({ ok: false, error: "webhookUrl must be a valid https URL" }, 400, origin);
+  }
+  if (!senderKey || senderKey.length < 8) {
+    return json({ ok: false, error: "senderKey must be at least 8 characters" }, 400, origin);
+  }
 
-  let webhookUrl = "";
-  let encrypted = "";
-
-  // Optional legacy webhook path: if both provided and valid, persist them
-  if (webhookUrlRaw || senderKeyRaw) {
-    if (!webhookUrlRaw || !isHttpsUrl(webhookUrlRaw)) {
-      return json({ ok: false, error: "webhookUrl must be a valid https URL" }, 400, origin);
-    }
-    if (!senderKeyRaw || senderKeyRaw.length < 8) {
-      return json({ ok: false, error: "senderKey must be at least 8 characters" }, 400, origin);
-    }
-    webhookUrl = webhookUrlRaw;
-    try {
-      encrypted = await encryptSecret(senderKeyRaw, env);
-    } catch (err) {
-      console.error("encrypt failed", err);
-      return json({ ok: false, error: "Server encryption not configured" }, 500, origin);
-    }
+  let encrypted;
+  try {
+    encrypted = await encryptSecret(senderKey, env);
+  } catch (err) {
+    console.error("encrypt failed", err);
+    return json({ ok: false, error: "Server encryption not configured" }, 500, origin);
   }
 
   try {
@@ -235,8 +227,10 @@ async function handleSubscribe(request, env, origin) {
     return json({ ok: false, error: "Database error" }, 500, origin);
   }
 
+  // Also enroll Founding Free when RESEND_API_KEY is set (email fan-out path)
   const resend = await enrollResendFoundingFree(email, name, env);
 
+  // Never return sender key
   return json(
     {
       ok: true,
