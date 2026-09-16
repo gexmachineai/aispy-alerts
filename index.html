@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="AISPYALERTS — AI-agent-ready trading alerts. Subscribe to signals written for agents, wire your own agent to your Robinhood account. Signals only — we never execute trades." />
   <title>AISPYALERTS — Trade with AI without needing to be a full-time trader</title>
-  <link rel="stylesheet" href="styles.css?v=emailfirst" />
+  <link rel="stylesheet" href="styles.css?v=aispyalerts" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
@@ -98,8 +98,7 @@
             <span class="step" aria-hidden="true">03</span>
             <h3>Get the alerts</h3>
             <p>
-              Follow us on 𝕏 for free alerts, or <a href="#subscribe">subscribe</a> to get SIGNAL emails (BCC).
-              Wire your own inbox→bot privately on your side — we never ask for a webhook URL on this page.
+              Follow us on 𝕏 for free alerts, or <a href="#subscribe">subscribe</a> to AISPYALERTS.
             </p>
           </article>
         </div>
@@ -126,25 +125,22 @@
     <section class="section section-alt" id="rhts">
       <div class="container">
         <div class="setup-card">
-          <h2>Connect your bot in 4 steps</h2>
+          <h2>Connect your bot</h2>
           <p class="section-intro">
-            Free optional DIY template (RHTS) — not part of the alert product.
+            Optional DIY template — not part of the alert product.
             Not financial advice. Not a signal service. Not managed trading.
           </p>
           <ol class="connect-steps">
             <li>
-              <strong>Subscribe with your email</strong> — use the
-              <a href="#subscribe">Subscribe</a> form on this site. We only need your email (name optional).
-              We never collect webhook URLs or sender keys here.
+              <strong>Subscribe</strong> — use the
+              <a href="#subscribe">Subscribe</a> form. Name optional, email required.
             </li>
             <li>
-              <strong>Get SIGNAL emails</strong> — when alerts fire, you’ll receive SIGNAL emails via BCC.
-              That’s the delivery path.
+              <strong>Get AISPYALERTS</strong> — alerts come to your email.
             </li>
             <li>
               <strong>Optional: DIY Grok Bot</strong> — open the free template, connect Robinhood Agentic,
-              and set your <code>BOT_PROFILE</code> on <em>your</em> side. Then wire your own inbox wake
-              to your bot yourself (privately). We never ask you to paste a webhook into Subscribe.
+              and set your <code>BOT_PROFILE</code> on <em>your</em> side.
               <div class="step-action">
                 <a class="btn btn-primary" id="rhts-import" href="https://x.ai/bot/w4Xau8t-tAX33K33pzz2S" target="_blank" rel="noopener noreferrer">Open in GrokBot</a>
               </div>
@@ -176,13 +172,13 @@
     <section class="section" id="subscribe">
       <div class="container waitlist-inner">
         <h2>Subscribe now</h2>
-        <p class="section-intro">Free alerts on 𝕏, or subscribe to email SIGNAL alerts (BCC).</p>
+        <p class="section-intro">Free alerts on 𝕏, or subscribe to AISPYALERTS by email.</p>
         <div class="subscribe-paths">
           <a class="btn btn-ghost btn-block x-follow" href="https://x.com/AISPYALERTS" target="_blank" rel="noopener noreferrer">Follow us on 𝕏 for free alerts</a>
           <p class="or-divider" aria-hidden="true">or</p>
         </div>
         <form class="waitlist-form" id="subscribe-form" name="subscribe" method="POST" action="#" novalidate>
-          <p class="form-lead">Get SIGNAL alerts by email (BCC). Name optional — email required.</p>
+          <p class="form-lead">Get AISPYALERTS by email. Name optional — email required.</p>
           <div class="form-row">
             <label for="name">Name</label>
             <input id="name" name="name" type="text" autocomplete="name" placeholder="Your name" />
@@ -256,7 +252,7 @@
           showMessage(err, "error");
           return;
         }
-        showMessage("Subscribed — you’ll get SIGNAL alerts by email.", "success");
+        showMessage("Subscribed — you’ll get AISPYALERTS by email.", "success");
       } catch (err) {
         showMessage("Network error. Please try again.", "error");
       } finally {
