@@ -740,3 +740,7 @@ a:hover {
   text-decoration: underline;
 }
 
+
+.text-white {
+  color: var(--text);
+}
