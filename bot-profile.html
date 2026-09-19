@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="BOT_PROFILE fill-in template for your trading bot preferences. Personal settings only — not financial advice." />
+  <title>Your BOT_PROFILE — AISPYALERTS</title>
+  <link rel="stylesheet" href="styles.css?v=botprofile" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/" aria-label="AISPYALERTS home">
+        <img src="assets/logo.jpeg" alt="AISPYALERTS" width="160" height="160" />
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="/#rhts">Connect bot</a>
+        <a href="/#disclaimer">Disclaimer</a>
+        <a class="nav-cta" href="/#subscribe">Subscribe now</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="section" id="bot-profile">
+      <div class="container bot-profile-page">
+        <p class="back-link"><a href="/#rhts">← Back to Connect bot</a></p>
+        <h1>Your BOT_PROFILE</h1>
+        <p class="section-intro">
+          Copy this, fill your choices, paste into your trading bot.
+          These are <strong>your</strong> preferences — not a recommendation of what to trade.
+        </p>
+        <p class="profile-note">
+          Personal automation settings for <em>your</em> bot, <em>your</em> risk, and <em>your</em> broker.
+          Checkboxes and blanks only — not instructions that tell you how you must trade.
+          Signals only. Not financial advice.
+        </p>
+
+        <div class="copy-box" id="bot-profile-box">
+          <button type="button" class="copy-btn" id="copy-bot-profile" aria-label="Copy BOT_PROFILE to clipboard" title="Copy">
+            <svg class="copy-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2" />
+              <path d="M5 15V7a2 2 0 0 1 2-2h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+            <span class="copy-label">Copy</span>
+          </button>
+          <pre id="bot-profile-text" tabindex="0">BOT_PROFILE
+(Personal bot settings — fill what you want your bot to follow. Not financial advice.)
+
+SIZE  (pick one)
+[ ] ___ contracts per trade
+[ ] ~___% of my Agentic buying power at the alert limit (whole spreads, round down)
+[ ] $____ max debit per trade
+Other: _______________________
+
+ENTRY
+[ ] Place at the alert limit only. If it doesn’t fill, cancel. Don’t chase.
+[ ] Place at the alert limit.
+    If not filled in ___ minutes → bump limit once by $____.
+    If still not filled ___ minutes after that → cancel and wait for the next alert.
+Other: _______________________
+
+STOP
+[ ] Use the stop on the alert. Don’t move it.
+[ ] Use the alert stop until _____ (e.g. second trim fills), then move leftover stop to _____ (e.g. +10% vs entry).
+Other: _______________________
+
+TRIMS  (pick one plan, or write your own)
+[ ] A — take half off when it doubles; let the rest run
+[ ] B — 1/3 at +____%, 1/3 at +____%, leftover at +____% vs entry
+[ ] C — no staged trims; exit only on stop / I’ll decide
+[ ] D — my own:
+      slice 1: ____ at ____
+      slice 2: ____ at ____
+      leftover: ____
+How to work trims:
+[ ] Resting limit closes at fill when the broker allows
+[ ] No resting limits — bot watches marks and closes when levels hit
+[ ] Resting if possible; otherwise watch marks
+
+PRICING
+[ ] If a level is already past on a check, exit at the live market/ask (not a stale target)
+[ ] Always use the original target price even if the market has moved
+Other: _______________________
+
+ORDERS
+[ ] show me first — confirm before entry and before exits
+[ ] just send it — auto entry and auto exits on my connected Agentic account
+
+AFTER OPEN
+[ ] Ping me after entry, each exit, and stop/target changes
+[ ] Only ping when something needs me
+[ ] Stay quiet unless something fails
+
+ACCOUNT
+Broker connection: _______________________
+(e.g. Robinhood Agentic only — last four ••••____)
+Don’t use: _______________________
+(e.g. other accounts / cash sleeve)
+
+MONITOR  (optional mark checks after a fill)
+[ ] Off — I’ll manage exits myself / resting orders only
+[ ] On — after my OPEN fill, check the vertical mark about once a minute vs stop/trims;
+         quiet unless a level hits (or per AFTER OPEN pings); turn off when flat
+User-facing line style if On:
+[ ] vertical | mark | entry | SL (or trim) only
+
+NOTES (optional)
+_______________________</pre>
+        </div>
+
+        <p class="profile-disclaimer">
+          AISPYALERTS provides trading signals only. We do not execute trades or control your brokerage.
+          Your BOT_PROFILE is yours alone — fill what you want your bot to follow.
+        </p>
+        <p class="back-link"><a href="/#rhts">← Back to Connect bot</a></p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <img class="footer-logo" src="assets/logo.jpeg" alt="" width="72" height="72" />
+      <p>&copy; <span id="year"></span> AISPYALERTS. Signals only. Not financial advice.</p>
+    </div>
+  </footer>
+
+  <script>
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    (function () {
+      var btn = document.getElementById("copy-bot-profile");
+      var pre = document.getElementById("bot-profile-text");
+      var label = btn.querySelector(".copy-label");
+      var timer = null;
+
+      function fallbackCopy(text) {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          return document.execCommand("copy");
+        } catch (e) {
+          return false;
+        } finally {
+          document.body.removeChild(ta);
+        }
+      }
+
+      function showCopied() {
+        var prev = label.textContent;
+        label.textContent = "Copied";
+        btn.classList.add("is-copied");
+        btn.setAttribute("aria-label", "Copied");
+        clearTimeout(timer);
+        timer = setTimeout(function () {
+          label.textContent = prev;
+          btn.classList.remove("is-copied");
+          btn.setAttribute("aria-label", "Copy BOT_PROFILE to clipboard");
+        }, 1600);
+      }
+
+      btn.addEventListener("click", function () {
+        var text = pre.textContent;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(showCopied).catch(function () {
+            if (fallbackCopy(text)) showCopied();
+          });
+        } else if (fallbackCopy(text)) {
+          showCopied();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
