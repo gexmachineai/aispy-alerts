@@ -5,6 +5,8 @@
  *   and Resend Founding Free enroll when RESEND_API_KEY is set.
  * POST /api/deliver: Bearer DELIVER_TOKEN → POST alerts to subscriber webhooks
  *   (skips rows without a usable webhook).
+ *   Optional body.emails: string[] allowlist — only those emails get the webhook;
+ *   omit emails for all active webhook subscribers. emails is stripped before POST.
  *
  * Secrets: ENCRYPTION_KEY (base64 32 bytes), DELIVER_TOKEN, RESEND_API_KEY
  * Binding: DB (D1)
@@ -309,6 +311,18 @@ async function handleDeliver(request, env, origin) {
     return json({ ok: false, error: "Invalid JSON body" }, 400, origin);
   }
 
+  // Optional allowlist: { emails: ["a@x.com","b@y.com"], SIGNAL: "..." }
+  // When present, only those subscribers get the webhook. Omit = all active (legacy).
+  let allowEmails = null;
+  if (alertBody && Array.isArray(alertBody.emails)) {
+    allowEmails = alertBody.emails
+      .map((e) => String(e || "").trim().toLowerCase())
+      .filter(Boolean);
+  }
+  // Never forward the allowlist field to subscriber bots
+  const { emails: _emailsIgnored, ...deliverPayload } = alertBody && typeof alertBody === "object" ? alertBody : {};
+  const payloadForBots = allowEmails ? deliverPayload : alertBody;
+
   let rows;
   try {
     const result = await env.DB.prepare(
@@ -320,6 +334,11 @@ async function handleDeliver(request, env, origin) {
     return json({ ok: false, error: "Database error" }, 500, origin);
   }
 
+  if (allowEmails && allowEmails.length) {
+    const want = new Set(allowEmails);
+    rows = rows.filter((r) => want.has(String(r.email || "").trim().toLowerCase()));
+  }
+
   // Skip email-only rows (no usable webhook) so they don't spam decrypt/network errors
   const webhookRows = rows.filter(hasUsableWebhook);
   const skipped = rows.length - webhookRows.length;
@@ -327,7 +346,7 @@ async function handleDeliver(request, env, origin) {
   const failed = [];
   let delivered = 0;
 
-  const outcomes = await Promise.all(webhookRows.map((sub) => deliverOne(sub, alertBody, env)));
+  const outcomes = await Promise.all(webhookRows.map((sub) => deliverOne(sub, payloadForBots, env)));
   for (const fail of outcomes) {
     if (fail) failed.push(fail);
     else delivered += 1;
@@ -341,6 +360,8 @@ async function handleDeliver(request, env, origin) {
       skipped,
       total: rows.length,
       webhookTargets: webhookRows.length,
+      filtered: Boolean(allowEmails && allowEmails.length),
+      emails: allowEmails,
     },
     200,
     origin
