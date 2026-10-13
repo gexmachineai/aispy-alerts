@@ -6,3 +6,11 @@ compatibility_date = "2026-09-08"
 binding = "DB"
 database_name = "aispyalerts-subscribers"
 database_id = "dc9d79a0-b59c-4249-976b-caf3f4d414f5"
+
+[[durable_objects.bindings]]
+name = "DELIVER_RETRY"
+class_name = "DeliverRetry"
+
+[[migrations]]
+tag = "v1-deliver-retry"
+new_sqlite_classes = ["DeliverRetry"]

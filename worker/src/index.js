@@ -256,15 +256,13 @@ async function postWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function deliverOne(sub, alertBody, env) {
+async function attemptPost(sub, payload, env) {
   let senderKey;
   try {
     senderKey = await decryptSecret(sub.sender_key_encrypted, env);
   } catch (err) {
-    return { email: sub.email, status: 0, error: "decrypt_failed" };
+    return { status: 0, ok: false, error: "decrypt_failed", detail: "" };
   }
-
-  const payload = typeof alertBody === "string" ? alertBody : JSON.stringify(alertBody);
   const opts = {
     method: "POST",
     headers: {
@@ -274,38 +272,95 @@ async function deliverOne(sub, alertBody, env) {
     },
     body: payload,
   };
-
-  async function attempt() {
-    try {
-      const res = await postWithTimeout(sub.webhook_url, opts, 8000);
-      let detail = "";
-      if (!res.ok) { try { detail = (await res.text()).slice(0, 300); } catch {} }
-      return { status: res.status, ok: res.ok, error: res.ok ? null : `http_${res.status}`, detail };
-    } catch (err) {
-      const msg = err && err.name === "AbortError" ? "timeout" : "network_error";
-      return { status: 0, ok: false, error: msg };
-    }
+  try {
+    const res = await postWithTimeout(sub.webhook_url, opts, 8000);
+    let detail = "";
+    if (!res.ok) { try { detail = (await res.text()).slice(0, 300); } catch {} }
+    return { status: res.status, ok: res.ok, error: res.ok ? null : `http_${res.status}`, detail };
+  } catch (err) {
+    const msg = err && err.name === "AbortError" ? "timeout" : "network_error";
+    return { status: 0, ok: false, error: msg, detail: "" };
   }
+}
 
-  let result = await attempt();
-  // Retry once on 5xx or network/timeout
+// Retryable in the background: Cursor automation rate limit (400 "rate limit"), 429, 5xx, network/timeout
+function isRetryable(r) {
+  if (!r || r.ok || r.error === "decrypt_failed") return false;
+  return r.status === 0 || r.status === 429 || r.status >= 500 || /rate limit/i.test(r.detail || "");
+}
+
+async function deliverOne(sub, alertBody, env) {
+  const payload = typeof alertBody === "string" ? alertBody : JSON.stringify(alertBody);
+  let result = await attemptPost(sub, payload, env);
+  // One quick retry on 5xx or network/timeout; longer retries happen in the background
   if (!result.ok && (result.status >= 500 || result.status === 0)) {
-    result = await attempt();
+    result = await attemptPost(sub, payload, env);
   }
-  // Cursor automation global rate limit comes back as 400 "rate limit"; back off and retry
-  for (let i = 0; i < 3 && !result.ok && /rate limit/i.test(result.detail || ""); i++) {
-    await new Promise((r) => setTimeout(r, 4000 * (i + 1)));
-    result = await attempt();
-  }
-
   if (!result.ok) {
-    console.error("deliver failed", { email: sub.email, status: result.status, error: result.error });
-    return { email: sub.email, status: result.status, error: result.error, detail: result.detail || "" };
+    console.error("deliver failed (first pass)", { email: sub.email, status: result.status, error: result.error });
+    return { email: sub.email, status: result.status, error: result.error, detail: result.detail || "", payload };
   }
   return null;
 }
 
-async function handleDeliver(request, env, origin) {
+async function logOutcome(env, row) {
+  try {
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS deliver_log (id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, email TEXT, outcome TEXT, status INTEGER, attempts INTEGER, detail TEXT, created_at TEXT DEFAULT (datetime('now')))`
+    ).run();
+    await env.DB.prepare(
+      `INSERT INTO deliver_log (job, email, outcome, status, attempts, detail) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(row.job, row.email, row.outcome, row.status, row.attempts, (row.detail || "").slice(0, 300)).run();
+  } catch (err) {
+    console.error("deliver_log write failed", err);
+  }
+}
+
+// One Durable Object per (job, target): retries every ~4s via alarms until success or deadline (~2 min)
+export class DeliverRetry {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+  async fetch(request) {
+    const job = await request.json();
+    await this.state.storage.put("job", { ...job, attempts: 0 });
+    await this.state.storage.setAlarm(Date.now() + job.intervalMs);
+    return new Response("queued");
+  }
+  async alarm() {
+    const job = await this.state.storage.get("job");
+    if (!job) return;
+    let sub = null;
+    try {
+      sub = await this.env.DB.prepare(
+        `SELECT email, webhook_url, sender_key_encrypted FROM subscribers WHERE active = 1 AND lower(email) = ?`
+      ).bind(String(job.email).toLowerCase()).first();
+    } catch (err) {
+      console.error("retry load sub failed", err);
+    }
+    const attempts = (job.attempts || 0) + 1;
+    if (!sub || !hasUsableWebhook(sub)) {
+      await logOutcome(this.env, { job: job.job, email: job.email, outcome: "gave_up_no_webhook", status: 0, attempts, detail: "" });
+      await this.state.storage.deleteAll();
+      return;
+    }
+    const r = await attemptPost(sub, job.payload, this.env);
+    const retryable = job.retryAll ? !r.ok : isRetryable(r);
+    const nextAt = Date.now() + job.intervalMs;
+    if (r.ok || !retryable || nextAt > job.deadline) {
+      const outcome = r.ok ? "delivered" : retryable ? "gave_up_deadline" : "gave_up_nonretryable";
+      console.log("deliver retry final", { job: job.job, email: job.email, outcome, status: r.status, attempts });
+      await logOutcome(this.env, { job: job.job, email: job.email, outcome, status: r.status, attempts, detail: r.detail });
+      await this.state.storage.deleteAll();
+      return;
+    }
+    await this.state.storage.put("job", { ...job, attempts });
+    await this.state.storage.setAlarm(nextAt);
+  }
+}
+
+async function handleDeliver(request, env, origin, ctx) {
   const auth = request.headers.get("Authorization") || "";
   const expected = env.DELIVER_TOKEN;
   if (!expected || auth !== `Bearer ${expected}`) {
@@ -354,10 +409,29 @@ async function handleDeliver(request, env, origin) {
   const failed = [];
   let delivered = 0;
 
-  const outcomes = await Promise.all(webhookRows.map((sub) => deliverOne(sub, payloadForBots, env)));
+  // Test-only knobs (DELIVER_TOKEN-gated): retryAllFailures treats any failure as retryable; retryWindowMs caps the window
+  const retryAll = Boolean(alertBody && alertBody.retryAllFailures === true);
+  const windowMs = Math.min(Math.max(Number(alertBody && alertBody.retryWindowMs) || 120000, 10000), 120000);
+  const { retryAllFailures: _ra, retryWindowMs: _rw, ...cleanForBots } = payloadForBots && typeof payloadForBots === "object" ? payloadForBots : {};
+  const botBody = payloadForBots && typeof payloadForBots === "object" ? cleanForBots : payloadForBots;
+
+  const jobId = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  const outcomes = await Promise.all(webhookRows.map((sub) => deliverOne(sub, botBody, env)));
+  const retrying = [];
   for (const fail of outcomes) {
-    if (fail) failed.push(fail);
-    else delivered += 1;
+    if (!fail) { delivered += 1; continue; }
+    const { payload, ...pub } = fail;
+    const willRetry = Boolean(env.DELIVER_RETRY) && (retryAll || isRetryable(fail));
+    failed.push({ ...pub, retrying: willRetry });
+    if (willRetry) {
+      retrying.push(fail.email);
+      const stub = env.DELIVER_RETRY.get(env.DELIVER_RETRY.idFromName(`${jobId}:${fail.email}`));
+      const p = stub.fetch("https://retry/start", {
+        method: "POST",
+        body: JSON.stringify({ job: jobId, email: fail.email, payload, intervalMs: 4000, deadline: Date.now() + windowMs, retryAll }),
+      }).catch((err) => console.error("retry enqueue failed", { email: fail.email, err: String(err) }));
+      if (ctx && ctx.waitUntil) ctx.waitUntil(p);
+    }
   }
 
   return json(
@@ -368,6 +442,9 @@ async function handleDeliver(request, env, origin) {
       skipped,
       total: rows.length,
       webhookTargets: webhookRows.length,
+      job: jobId,
+      retrying,
+      retryWindowMs: retrying.length ? windowMs : 0,
       filtered: Boolean(allowEmails && allowEmails.length),
       emails: allowEmails,
     },
@@ -377,7 +454,7 @@ async function handleDeliver(request, env, origin) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin");
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -395,7 +472,7 @@ export default {
     }
 
     if (request.method === "POST" && path === "/api/deliver") {
-      return handleDeliver(request, env, origin);
+      return handleDeliver(request, env, origin, ctx);
     }
 
     return json({ ok: false, error: "Not found" }, 404, origin);
