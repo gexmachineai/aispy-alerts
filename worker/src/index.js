@@ -270,6 +270,7 @@ async function deliverOne(sub, alertBody, env) {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       Authorization: `Bearer ${senderKey}`,
+      "X-Automation-Key": senderKey,
     },
     body: payload,
   };
@@ -277,7 +278,9 @@ async function deliverOne(sub, alertBody, env) {
   async function attempt() {
     try {
       const res = await postWithTimeout(sub.webhook_url, opts, 8000);
-      return { status: res.status, ok: res.ok, error: res.ok ? null : `http_${res.status}` };
+      let detail = "";
+      if (!res.ok) { try { detail = (await res.text()).slice(0, 300); } catch {} }
+      return { status: res.status, ok: res.ok, error: res.ok ? null : `http_${res.status}`, detail };
     } catch (err) {
       const msg = err && err.name === "AbortError" ? "timeout" : "network_error";
       return { status: 0, ok: false, error: msg };
@@ -289,10 +292,15 @@ async function deliverOne(sub, alertBody, env) {
   if (!result.ok && (result.status >= 500 || result.status === 0)) {
     result = await attempt();
   }
+  // Cursor automation global rate limit comes back as 400 "rate limit"; back off and retry
+  for (let i = 0; i < 3 && !result.ok && /rate limit/i.test(result.detail || ""); i++) {
+    await new Promise((r) => setTimeout(r, 4000 * (i + 1)));
+    result = await attempt();
+  }
 
   if (!result.ok) {
     console.error("deliver failed", { email: sub.email, status: result.status, error: result.error });
-    return { email: sub.email, status: result.status, error: result.error };
+    return { email: sub.email, status: result.status, error: result.error, detail: result.detail || "" };
   }
   return null;
 }
