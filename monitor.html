@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="robots" content="noindex" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="AISPYALERTS position monitor: a small script that wakes your own Grok Bot about once a minute while you hold an open position. Not financial advice." />
+  <title>Position monitor — AISPYALERTS</title>
+  <link rel="stylesheet" href="styles.css?v=botprofile2" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Orbitron:wght@600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/" aria-label="AISPYALERTS home">
+        <img src="assets/logo.jpeg" alt="AISPYALERTS" width="160" height="160" />
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="/#rhts">Connect bot</a>
+        <a href="/#disclaimer">Disclaimer</a>
+        <a class="nav-cta" href="/#subscribe">Subscribe now</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="section" id="monitor">
+      <div class="container" style="max-width:860px">
+        <p class="eyebrow">For your Grok Bot</p>
+        <h1>Position monitor</h1>
+        <p>A tiny Python script that runs on your bot's computer. While you have an open option position, it sends a small tick to <strong>your own</strong> bot's webhook about once a minute during US market hours (9:30 AM–4:00 PM ET, weekdays). Each tick wakes your bot, which quotes the position through <strong>your own</strong> broker connection and applies the stop and trims from <strong>your own</strong> BOT_PROFILE.</p>
+        <p>The script never connects to a broker, never places orders, and ships with no keys. It only uses the settings you give it.</p>
+        <p><a class="btn btn-primary" href="/monitor/aispy-monitor.py" download>Download aispy-monitor.py</a></p>
+
+        <h2>What it needs from your setup</h2>
+        <ul>
+          <li><code>AISPY_WEBHOOK_URL</code>: your bot's webhook URL (https). Required.</li>
+          <li><code>AISPY_WEBHOOK_KEY</code> or <code>AISPY_WEBHOOK_KEY_FILE</code>: your bot's webhook key, or a file holding it. Required.</li>
+          <li><code>AISPY_POSITION_FILE</code>: a JSON file your bot writes when it opens a trade. Ticks are sent only while it contains <code>"status": "open"</code>. Default: <code>~/aispy-monitor/open_position.json</code>.</li>
+          <li><code>AISPY_BOT_PROFILE</code>: the path to your BOT_PROFILE file. It's sent with each tick so your bot knows which rules to apply. Optional.</li>
+          <li><code>AISPY_INTERVAL</code>: seconds between ticks. Default 60, minimum 15. Optional.</li>
+        </ul>
+        <p>You can set these as environment variables or as <code>KEY=value</code> lines in <code>~/aispy-monitor/config.env</code>. Your broker connection (for example Robinhood Agentic) stays inside your bot; the script never sees it.</p>
+
+        <h2>Install (instructions for your Grok Bot)</h2>
+        <p>Paste this to your bot:</p>
+<pre style="white-space:pre-wrap;background:#0b1410;border:1px solid #1f3a2b;border-radius:10px;padding:16px;overflow:auto"><code>Set up the AISPYALERTS position monitor on your computer:
+1. mkdir -p ~/aispy-monitor &amp;&amp; curl -fsSL https://aispyalerts.com/monitor/aispy-monitor.py -o ~/aispy-monitor/aispy-monitor.py
+2. Create ~/aispy-monitor/config.env (chmod 600) with:
+   AISPY_WEBHOOK_URL=&lt;your routine's webhook URL&gt;
+   AISPY_WEBHOOK_KEY_FILE=&lt;path to a file holding the webhook key&gt;
+   AISPY_POSITION_FILE=&lt;where you write the open-position JSON&gt;
+   AISPY_BOT_PROFILE=&lt;path to my BOT_PROFILE&gt;
+   Never print the key or paste it into chat.
+3. Run: python3 ~/aispy-monitor/aispy-monitor.py check   (it must show no errors)
+4. Run: python3 ~/aispy-monitor/aispy-monitor.py once    (one test tick; ignore it when it arrives, since it has "test": true)
+5. Start it in the background: nohup python3 ~/aispy-monitor/aispy-monitor.py run &gt;/dev/null 2&gt;&amp;1 &amp;
+6. When you open a position, write {"status":"open", ...} to the position file and run "aispy-monitor.py arm".
+   When you're flat, set "status":"closed" (or delete the file) and run "aispy-monitor.py disarm".
+7. On each price.tick, quote the open position through my broker connection and enforce the stop and trims in my BOT_PROFILE.</code></pre>
+
+        <h2>Commands</h2>
+        <ul>
+          <li><code>run</code>: start the loop.</li>
+          <li><code>arm</code> and <code>disarm</code>: turn ticks on or off.</li>
+          <li><code>check</code>: validate the config, with the key masked.</li>
+          <li><code>once</code>: send one test tick.</li>
+        </ul>
+        <p>The log is written to <code>~/aispy-monitor/monitor.log</code>.</p>
+        <p class="fine-print">Not financial advice. You're responsible for your own bot, broker account, and trades. AISPYALERTS sells signals only and never executes trades.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
