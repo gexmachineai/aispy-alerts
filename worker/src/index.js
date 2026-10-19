@@ -1,3 +1,4 @@
+import { BOARD_HTML } from "./board_html.js";
 /**
  * AISPYALERTS API — subscribe (webhook + email) + deliver fan-out
  *
@@ -453,22 +454,39 @@ async function handleDeliver(request, env, origin, ctx) {
   );
 }
 
-/* ---- Public GEX board (additive) ---- */
+/* ---- Private GEX board (Basic Auth, served by Worker) ---- */
 const BOARD_MAX_BYTES = 1000000;
 const BOARD_KEEP = 200;
+const BOARD_USER = "fern";
 async function boardEnsure(env) {
-  await env.DB.prepare("CREATE TABLE IF NOT EXISTS board_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)").run();
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_latest (id INTEGER PRIMARY KEY CHECK (id = 1), ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_history (ts TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
+  ]);
 }
-function boardResp(body, status, origin, maxAge) {
-  return new Response(body, { status, headers: {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": maxAge ? `public, max-age=${maxAge}` : "no-store",
-    ...corsHeaders(origin) } });
-}
+let boardReady = false;
+async function boardInit(env) { if (!boardReady) { await boardEnsure(env); boardReady = true; } }
 function safeEq(a, b) {
-  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
-  let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const n = Math.max(a.length, b.length);
+  let r = a.length ^ b.length;
+  for (let i = 0; i < n; i++) r |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   return r === 0;
+}
+const PRIV_HEADERS = {
+  "Cache-Control": "no-store, private",
+  "X-Robots-Tag": "noindex, nofollow",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+};
+function privResp(body, status, type, extra) {
+  return new Response(body, { status, headers: { "Content-Type": type, ...PRIV_HEADERS, ...(extra || {}) } });
+}
+function boardAuthOk(request, env) {
+  const pw = env.BOARD_PASSWORD;
+  if (!pw) return false;
+  const h = request.headers.get("Authorization") || "";
+  return safeEq(h, "Basic " + btoa(`${BOARD_USER}:${pw}`));
 }
 async function handleBoardPut(request, env, origin) {
   const key = env.BOARD_PUBLISH_KEY;
@@ -480,24 +498,40 @@ async function handleBoardPut(request, env, origin) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return json({ ok: false, error: "JSON object required" }, 400, origin);
   const now = new Date().toISOString();
   const ts = typeof data.generated_et === "string" ? data.generated_et : now;
-  await boardEnsure(env);
-  await env.DB.prepare("INSERT INTO board_snapshots (ts, received_at, body) VALUES (?, ?, ?)").bind(ts, now, JSON.stringify(data)).run();
-  await env.DB.prepare("DELETE FROM board_snapshots WHERE id NOT IN (SELECT id FROM board_snapshots ORDER BY id DESC LIMIT ?)").bind(BOARD_KEEP).run();
+  const body = JSON.stringify(data);
+  await boardInit(env);
+  const stmts = [
+    env.DB.prepare("INSERT INTO board_latest (id, ts, received_at, body) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, received_at = excluded.received_at, body = excluded.body").bind(ts, now, body),
+    // Only writes a row when generated_et is new (PK conflict is a no-op).
+    env.DB.prepare("INSERT OR IGNORE INTO board_history (ts, received_at, body) VALUES (?, ?, ?)").bind(ts, now, body),
+  ];
+  if (Math.random() < 0.02) {
+    stmts.push(env.DB.prepare("DELETE FROM board_history WHERE ts NOT IN (SELECT ts FROM board_history ORDER BY ts DESC LIMIT ?)").bind(BOARD_KEEP));
+  }
+  await env.DB.batch(stmts);
   return json({ ok: true, ts, bytes: text.length }, 200, origin);
 }
-async function handleBoardLatest(url, env, origin) {
-  await boardEnsure(env);
-  const ts = url.searchParams.get("ts");
-  const row = ts
-    ? await env.DB.prepare("SELECT body FROM board_snapshots WHERE ts = ? ORDER BY id DESC LIMIT 1").bind(ts).first()
-    : await env.DB.prepare("SELECT body FROM board_snapshots ORDER BY id DESC LIMIT 1").first();
-  if (!row) return json({ ok: false, error: "No board yet" }, 404, origin);
-  return boardResp(row.body, 200, origin, ts ? 300 : 15);
-}
-async function handleBoardHistory(env, origin) {
-  await boardEnsure(env);
-  const { results } = await env.DB.prepare("SELECT DISTINCT ts FROM board_snapshots ORDER BY ts DESC LIMIT ?").bind(BOARD_KEEP).all();
-  return boardResp(JSON.stringify({ runs: results.map(r => r.ts) }), 200, origin, 15);
+async function handlePrivateBoard(request, env, url, rest) {
+  if (!boardAuthOk(request, env)) {
+    return privResp("Unauthorized", 401, "text/plain; charset=utf-8", { "WWW-Authenticate": 'Basic realm="board", charset="UTF-8"' });
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") return privResp("Method not allowed", 405, "text/plain");
+  if (rest === "") return privResp(null, 301, "text/plain", { Location: url.pathname + "/" });
+  if (rest === "/") return privResp(BOARD_HTML, 200, "text/html; charset=utf-8");
+  await boardInit(env);
+  if (rest === "/latest") {
+    const ts = url.searchParams.get("ts");
+    const row = ts
+      ? await env.DB.prepare("SELECT body FROM board_history WHERE ts = ?").bind(ts).first()
+      : await env.DB.prepare("SELECT body FROM board_latest WHERE id = 1").first();
+    if (!row) return privResp(JSON.stringify({ ok: false, error: "No board yet" }), 404, "application/json");
+    return privResp(row.body, 200, "application/json; charset=utf-8");
+  }
+  if (rest === "/history") {
+    const { results } = await env.DB.prepare("SELECT ts FROM board_history ORDER BY ts DESC LIMIT ?").bind(BOARD_KEEP).all();
+    return privResp(JSON.stringify({ runs: results.map(r => r.ts) }), 200, "application/json; charset=utf-8");
+  }
+  return privResp("Not found", 404, "text/plain");
 }
 
 export default {
@@ -526,12 +560,12 @@ export default {
       return handleBoardPut(request, env, origin);
     }
 
-    if (request.method === "GET" && path === "/api/board/latest") {
-      return handleBoardLatest(url, env, origin);
-    }
-
-    if (request.method === "GET" && path === "/api/board/history") {
-      return handleBoardHistory(env, origin);
+    const slug = env.BOARD_SLUG;
+    if (slug && slug.length >= 16) {
+      const pre = `/b/${slug}`;
+      if (url.pathname === pre || url.pathname.startsWith(pre + "/")) {
+        return handlePrivateBoard(request, env, url, url.pathname.slice(pre.length));
+      }
     }
 
     return json({ ok: false, error: "Not found" }, 404, origin);
