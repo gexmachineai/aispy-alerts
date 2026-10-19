@@ -453,6 +453,53 @@ async function handleDeliver(request, env, origin, ctx) {
   );
 }
 
+/* ---- Public GEX board (additive) ---- */
+const BOARD_MAX_BYTES = 1000000;
+const BOARD_KEEP = 200;
+async function boardEnsure(env) {
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS board_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)").run();
+}
+function boardResp(body, status, origin, maxAge) {
+  return new Response(body, { status, headers: {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": maxAge ? `public, max-age=${maxAge}` : "no-store",
+    ...corsHeaders(origin) } });
+}
+function safeEq(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let r = 0; for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+async function handleBoardPut(request, env, origin) {
+  const key = env.BOARD_PUBLISH_KEY;
+  const auth = request.headers.get("Authorization") || "";
+  if (!key || !safeEq(auth, `Bearer ${key}`)) return json({ ok: false, error: "Unauthorized" }, 401, origin);
+  const text = await request.text();
+  if (new TextEncoder().encode(text).length > BOARD_MAX_BYTES) return json({ ok: false, error: "Too large" }, 413, origin);
+  let data; try { data = JSON.parse(text); } catch { return json({ ok: false, error: "Invalid JSON" }, 400, origin); }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return json({ ok: false, error: "JSON object required" }, 400, origin);
+  const now = new Date().toISOString();
+  const ts = typeof data.generated_et === "string" ? data.generated_et : now;
+  await boardEnsure(env);
+  await env.DB.prepare("INSERT INTO board_snapshots (ts, received_at, body) VALUES (?, ?, ?)").bind(ts, now, JSON.stringify(data)).run();
+  await env.DB.prepare("DELETE FROM board_snapshots WHERE id NOT IN (SELECT id FROM board_snapshots ORDER BY id DESC LIMIT ?)").bind(BOARD_KEEP).run();
+  return json({ ok: true, ts, bytes: text.length }, 200, origin);
+}
+async function handleBoardLatest(url, env, origin) {
+  await boardEnsure(env);
+  const ts = url.searchParams.get("ts");
+  const row = ts
+    ? await env.DB.prepare("SELECT body FROM board_snapshots WHERE ts = ? ORDER BY id DESC LIMIT 1").bind(ts).first()
+    : await env.DB.prepare("SELECT body FROM board_snapshots ORDER BY id DESC LIMIT 1").first();
+  if (!row) return json({ ok: false, error: "No board yet" }, 404, origin);
+  return boardResp(row.body, 200, origin, ts ? 300 : 15);
+}
+async function handleBoardHistory(env, origin) {
+  await boardEnsure(env);
+  const { results } = await env.DB.prepare("SELECT DISTINCT ts FROM board_snapshots ORDER BY ts DESC LIMIT ?").bind(BOARD_KEEP).all();
+  return boardResp(JSON.stringify({ runs: results.map(r => r.ts) }), 200, origin, 15);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const origin = request.headers.get("Origin");
@@ -473,6 +520,18 @@ export default {
 
     if (request.method === "POST" && path === "/api/deliver") {
       return handleDeliver(request, env, origin, ctx);
+    }
+
+    if (request.method === "PUT" && path === "/api/board") {
+      return handleBoardPut(request, env, origin);
+    }
+
+    if (request.method === "GET" && path === "/api/board/latest") {
+      return handleBoardLatest(url, env, origin);
+    }
+
+    if (request.method === "GET" && path === "/api/board/history") {
+      return handleBoardHistory(env, origin);
     }
 
     return json({ ok: false, error: "Not found" }, 404, origin);
