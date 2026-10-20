@@ -458,10 +458,45 @@ async function handleDeliver(request, env, origin, ctx) {
 const BOARD_MAX_BYTES = 1000000;
 const BOARD_KEEP = 200;
 const BOARD_USER = "fern";
+const BOARD_H15_KEEP = 30;
+const boardTrim = env => env.DB.prepare("DELETE FROM board_hist15 WHERE bucket NOT IN (SELECT bucket FROM board_hist15 ORDER BY ts DESC, bucket DESC LIMIT ?)").bind(BOARD_H15_KEEP);
+// History slots: 09:30 ET then every 15 min through 16:00. Each slot holds the board AT the mark,
+// or else the latest board published before it on the same day.
+function boardSlotsBetween(aTs, bTs) {
+  const a = Date.parse(aTs), b = Date.parse(bTs), out = [];
+  if (!(a < b)) return out;
+  const days = new Set([String(aTs).slice(0, 10), String(bTs).slice(0, 10)]);
+  const om = /([+-]\d{2}:\d{2})$/.exec(aTs) || /([+-]\d{2}:\d{2})$/.exec(bTs), off = om ? om[1] : "-04:00";
+  for (const d of days) for (let m = 570; m <= 960; m += 15) {
+    const hm = `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    const e = Date.parse(`${d}T${hm}:00${off}`);
+    if (e > a && e <= b) out.push({ key: `${d}T${hm}`, day: d, epoch: e });
+  }
+  return out;
+}
+function boardSlotStmts(env, prevTs, prevBody, newTs, newBody, now) {
+  const stmts = [];
+  for (const sl of boardSlotsBetween(prevTs, newTs)) {
+    let ts, body;
+    if (newBody && Date.parse(newTs) === sl.epoch) { ts = newTs; body = newBody; }
+    else if (prevBody && String(prevTs).slice(0, 10) === sl.day) { ts = prevTs; body = prevBody; }
+    else continue;
+    let d; try { d = JSON.parse(body); } catch { continue; }
+    if (!d || typeof d !== "object") continue;
+    stmts.push(env.DB.prepare("INSERT OR IGNORE INTO board_hist15 (bucket, ts, received_at, summary, body) VALUES (?, ?, ?, ?, ?)").bind(sl.key, ts, now, boardSummary(d), body));
+  }
+  return stmts;
+}
+function boardSummary(d) {
+  const pick = ["generated_et", "generated_label", "spot", "net_gex", "regime", "wall_L", "wall_R", "mm_magnet", "flip", "green_count", "box_count"];
+  const o = {}; for (const k of pick) if (d[k] !== undefined) o[k] = d[k];
+  return JSON.stringify(o);
+}
 async function boardEnsure(env) {
   await env.DB.batch([
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_latest (id INTEGER PRIMARY KEY CHECK (id = 1), ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_history (ts TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
   ]);
 }
 let boardReady = false;
@@ -502,12 +537,10 @@ async function handleBoardPut(request, env, origin) {
   await boardInit(env);
   const stmts = [
     env.DB.prepare("INSERT INTO board_latest (id, ts, received_at, body) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, received_at = excluded.received_at, body = excluded.body").bind(ts, now, body),
-    // Only writes a row when generated_et is new (PK conflict is a no-op).
-    env.DB.prepare("INSERT OR IGNORE INTO board_history (ts, received_at, body) VALUES (?, ?, ?)").bind(ts, now, body),
   ];
-  if (Math.random() < 0.02) {
-    stmts.push(env.DB.prepare("DELETE FROM board_history WHERE ts NOT IN (SELECT ts FROM board_history ORDER BY ts DESC LIMIT ?)").bind(BOARD_KEEP));
-  }
+  const prev = await env.DB.prepare("SELECT ts, body FROM board_latest WHERE id = 1").first();
+  const slots = prev ? boardSlotStmts(env, prev.ts, prev.body, ts, body, now) : [];
+  if (slots.length) stmts.push(...slots, boardTrim(env));
   await env.DB.batch(stmts);
   return json({ ok: true, ts, bytes: text.length }, 200, origin);
 }
@@ -522,14 +555,30 @@ async function handlePrivateBoard(request, env, url, rest) {
   if (rest === "/latest") {
     const ts = url.searchParams.get("ts");
     const row = ts
-      ? await env.DB.prepare("SELECT body FROM board_history WHERE ts = ?").bind(ts).first()
+      ? (await env.DB.prepare("SELECT body FROM board_hist15 WHERE ts = ?").bind(ts).first()) || (await env.DB.prepare("SELECT body FROM board_history WHERE ts = ?").bind(ts).first())
       : await env.DB.prepare("SELECT body FROM board_latest WHERE id = 1").first();
     if (!row) return privResp(JSON.stringify({ ok: false, error: "No board yet" }), 404, "application/json");
     return privResp(row.body, 200, "application/json; charset=utf-8");
   }
   if (rest === "/history") {
-    const { results } = await env.DB.prepare("SELECT ts FROM board_history ORDER BY ts DESC LIMIT ?").bind(BOARD_KEEP).all();
+    const { results } = await env.DB.prepare("SELECT ts FROM board_hist15 ORDER BY bucket DESC LIMIT ?").bind(BOARD_KEEP).all();
     return privResp(JSON.stringify({ runs: results.map(r => r.ts) }), 200, "application/json; charset=utf-8");
+  }
+  if (rest === "/history15") {
+    // Fill slots that passed since the last push (pushes may have stopped).
+    const L = await env.DB.prepare("SELECT ts, body FROM board_latest WHERE id = 1").first();
+    if (L) {
+      const fill = boardSlotStmts(env, L.ts, L.body, new Date().toISOString(), null, new Date().toISOString());
+      if (fill.length) await env.DB.batch([...fill, boardTrim(env)]);
+    }
+    const lim = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 200);
+    const before = url.searchParams.get("before");
+    const q = before
+      ? env.DB.prepare("SELECT bucket, ts, summary FROM board_hist15 WHERE bucket < ? ORDER BY bucket DESC LIMIT ?").bind(before, lim + 1)
+      : env.DB.prepare("SELECT bucket, ts, summary FROM board_hist15 ORDER BY bucket DESC LIMIT ?").bind(lim + 1);
+    const { results } = await q.all();
+    const more = results.length > lim, rows = results.slice(0, lim).map(r => ({ bucket: r.bucket, ts: r.ts, ...JSON.parse(r.summary) }));
+    return privResp(JSON.stringify({ rows, next: more ? rows[rows.length - 1].bucket : null }), 200, "application/json; charset=utf-8");
   }
   return privResp("Not found", 404, "text/plain");
 }
