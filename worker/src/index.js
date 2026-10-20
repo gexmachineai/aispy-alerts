@@ -561,8 +561,8 @@ async function handlePrivateBoard(request, env, url, rest) {
     return privResp(row.body, 200, "application/json; charset=utf-8");
   }
   if (rest === "/history") {
-    const { results } = await env.DB.prepare("SELECT ts FROM board_hist15 ORDER BY bucket DESC LIMIT ?").bind(BOARD_KEEP).all();
-    return privResp(JSON.stringify({ runs: results.map(r => r.ts) }), 200, "application/json; charset=utf-8");
+    const { results } = await env.DB.prepare("SELECT bucket, ts FROM board_hist15 WHERE length(bucket) = 16 ORDER BY bucket DESC LIMIT ?").bind(BOARD_KEEP).all();
+    return privResp(JSON.stringify({ runs: results.map(r => r.ts), slots: results.map(r => r.bucket) }), 200, "application/json; charset=utf-8");
   }
   if (rest === "/history15") {
     // Fill slots that passed since the last push (pushes may have stopped).
@@ -574,8 +574,8 @@ async function handlePrivateBoard(request, env, url, rest) {
     const lim = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 200);
     const before = url.searchParams.get("before");
     const q = before
-      ? env.DB.prepare("SELECT bucket, ts, summary FROM board_hist15 WHERE bucket < ? ORDER BY bucket DESC LIMIT ?").bind(before, lim + 1)
-      : env.DB.prepare("SELECT bucket, ts, summary FROM board_hist15 ORDER BY bucket DESC LIMIT ?").bind(lim + 1);
+      ? env.DB.prepare("SELECT bucket, ts, summary FROM board_hist15 WHERE length(bucket) = 16 AND bucket < ? ORDER BY bucket DESC LIMIT ?").bind(before, lim + 1)
+      : env.DB.prepare("SELECT bucket, ts, summary FROM board_hist15 WHERE length(bucket) = 16 ORDER BY bucket DESC LIMIT ?").bind(lim + 1);
     const { results } = await q.all();
     const more = results.length > lim, rows = results.slice(0, lim).map(r => ({ bucket: r.bucket, ts: r.ts, ...JSON.parse(r.summary) }));
     return privResp(JSON.stringify({ rows, next: more ? rows[rows.length - 1].bucket : null }), 200, "application/json; charset=utf-8");
