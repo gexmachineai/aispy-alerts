@@ -569,6 +569,51 @@ async function boardStoreSym(env, sym, data, body) {
   return ts;
 }
 GEX_H.storeSym = boardStoreSym;
+// SPY snapshots (written from the GexFeed DO tick). Retention: SNAP_KEEP_DAYS, purged once per trading day.
+const SNAP_KEEP_DAYS = 90;
+let snapInit = false;
+async function snapTables(env) {
+  if (snapInit) return; await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_snap_min (date TEXT NOT NULL, hm TEXT NOT NULL, ts TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (date, hm))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_snap_evt (date TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (ts, kind))"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS board_snap_evt_date ON board_snap_evt (date)"),
+  ]); snapInit = true;
+}
+GEX_H.snapWrite = async (env, rows, purge) => {
+  await snapTables(env);
+  const stmts = rows.map(([sql, ...a]) => env.DB.prepare(sql).bind(...a));
+  if (purge) { const cut = new Date(Date.now() - SNAP_KEEP_DAYS * 864e5).toISOString().slice(0, 10);
+    stmts.push(env.DB.prepare("DELETE FROM board_snap_min WHERE date < ? AND date NOT LIKE 'test-%'").bind(cut), env.DB.prepare("DELETE FROM board_snap_evt WHERE date < ? AND date NOT LIKE 'test-%'").bind(cut)); }
+  if (stmts.length) await env.DB.batch(stmts);
+};
+async function snapRead(env, url, rest) {
+  await snapTables(env);
+  const q = k => url.searchParams.get(k), J = (o, s = 200) => privResp(JSON.stringify(o), s, "application/json; charset=utf-8");
+  const date = q("date"), okD = d => /^(test-)?\d{4}-\d{2}-\d{2}$/.test(d || "");
+  if (rest === "/snaps" || rest === "/snaps/dates") {
+    const { results } = await env.DB.prepare("SELECT date, COUNT(*) n, MIN(hm) first, MAX(hm) last FROM board_snap_min GROUP BY date ORDER BY date DESC").all();
+    const ev = (await env.DB.prepare("SELECT date, COUNT(*) n FROM board_snap_evt GROUP BY date").all()).results;
+    const em = Object.fromEntries(ev.map(r => [r.date, r.n]));
+    return J({ ok: true, dates: results.map(r => ({ ...r, events: em[r.date] || 0 })), extra_event_dates: ev.filter(r => !results.some(x => x.date === r.date)) });
+  }
+  if (rest === "/snaps/min") {
+    if (!okD(date)) return J({ ok: false, error: "date=YYYY-MM-DD required" }, 400);
+    const t = q("t");
+    if (!t) { const { results } = await env.DB.prepare("SELECT hm, ts, green FROM board_snap_min WHERE date = ? ORDER BY hm").bind(date).all(); return J({ ok: true, date, minutes: results }); }
+    if (!/^\d{2}:\d{2}$/.test(t)) return J({ ok: false, error: "t=HH:MM" }, 400);
+    const r = await env.DB.prepare("SELECT body FROM board_snap_min WHERE date = ? AND hm = ?").bind(date, t).first();
+    return r ? privResp(r.body, 200, "application/json; charset=utf-8") : J({ ok: false, error: "no snapshot" }, 404);
+  }
+  if (rest === "/snaps/events") {
+    const ts = q("ts");
+    if (ts) { const r = await env.DB.prepare("SELECT body FROM board_snap_evt WHERE ts = ? ORDER BY kind LIMIT 1").bind(ts).first();
+      return r ? privResp(r.body, 200, "application/json; charset=utf-8") : J({ ok: false, error: "no event" }, 404); }
+    const { results } = okD(date) ? await env.DB.prepare("SELECT date, ts, kind, green FROM board_snap_evt WHERE date = ? ORDER BY ts").bind(date).all()
+      : await env.DB.prepare("SELECT date, ts, kind, green FROM board_snap_evt ORDER BY ts DESC LIMIT 200").all();
+    return J({ ok: true, events: results });
+  }
+  return null;
+}
 GEX_H.slotStmts = (env, table, prevTs, prevBody, newTs, newBody, now) => boardSlotStmts(env, prevTs, prevBody, newTs, newBody, now, table);
 GEX_H.shadowBatch = async (env, slots) => { await boardInit(env); await env.DB.batch([...slots, boardTrim(env, "board_shadow_hist15")]); };
 
@@ -667,6 +712,8 @@ async function handleShadowApi(request, env, ctx, path) {
   if (request.method === "GET" && path === "/api/board/shadow") return shadowLatest(env, ctx, "api");
   if (request.method === "GET" && path === "/api/board/shadow/status") { const r = await stub.fetch("https://gex/status"); return privResp(await r.text(), r.status, "application/json"); }
   if (request.method === "POST" && path === "/api/board/shadow/run") { const r = await stub.fetch("https://gex/run" + url.search); MICRO.clear(); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "POST" && path === "/api/board/shadow/snaptest") { const r = await stub.fetch("https://gex/snaptest"); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "DELETE" && path === "/api/board/shadow/snaptest") { await snapTables(env); await env.DB.batch([env.DB.prepare("DELETE FROM board_snap_min WHERE date LIKE 'test-%'"), env.DB.prepare("DELETE FROM board_snap_evt WHERE date LIKE 'test-%'")]); return privResp('{"ok":true}', 200, "application/json"); }
   if (request.method === "POST" && path === "/api/board/shadow/ensure") { const r = await stub.fetch("https://gex/ensure"); return privResp(await r.text(), r.status, "application/json"); }
   if (request.method === "GET" && path === "/api/board/shadow/history15") {
     await boardInit(env);
@@ -685,6 +732,7 @@ async function handlePrivateBoard(request, env, url, rest, ctx) {
   if (rest === "/shadow" || rest === "/shadow/latest") return shadowLatest(env, ctx, "b");
   const xs = reqSym(url);
   if (xs && (rest === "/latest" || rest === "/history" || rest === "/history15")) return symBoardRead(env, url, rest, ctx, xs);
+  if (rest.startsWith("/snaps")) { const r = await snapRead(env, url, rest); if (r) return r; }
   await boardInit(env);
   if (rest === "/latest") {
     const ts = url.searchParams.get("ts");

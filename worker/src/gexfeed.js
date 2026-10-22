@@ -471,6 +471,7 @@ export class GexFeed {
       }
       tasks.push(this.state.storage.put("gf", this.gf));
     }
+    if (!manual || opts.snapTest) { try { const sp = await this.snap(b, body, !!opts.snapTest); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
     }
     await Promise.all(tasks);
     const tEnd = Date.now();
@@ -478,6 +479,24 @@ export class GexFeed {
     if (!manual) await this.state.storage.put("meta", meta);
     console.log(JSON.stringify({ gexfeed: "cycle", sym: cfg.sym, cycle: meta.cycle, manual, pm: pmLive, mode: cfg.live ? "live" : this.mode(), wall_ms: tEnd - t0, fetch_ms: tFetch - t0, req: src.reqs, n: f.quotes.size, spot: b.spot, net: b.net_gex, flip: b.flip, green: b.green_count }));
     return { board: b, meta };
+  }
+  /** SPY board snapshots -> D1: one per ET minute 09:30-16:00 (board_snap_min) + green_count events (board_snap_evt). test=true writes date "test-YYYY-MM-DD", no state change. */
+  async snap(b, body, test) {
+    const p = etParts(Date.now()), g = typeof b.green_count === "number" ? b.green_count : null;
+    const st = this.snapSt = this.snapSt || (await this.state.storage.get("snap")) || { min: null, g: null, purged: null };
+    const date = (test ? "test-" : "") + p.date, inRth = test || (tradingDay(p.date) && p.secs >= 34200 && p.secs <= 57659);
+    const stmts = [], ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`, key = date + " " + p.hm;
+    if (inRth && st.min !== key) stmts.push(["INSERT OR IGNORE INTO board_snap_min (date, hm, ts, green, body) VALUES (?, ?, ?, ?, ?)", date, p.hm, ts, g, body]);
+    let ev = null;
+    if (g !== null) { if ((st.g === null || st.g < 3) && g >= 3) ev = "green3"; if (g === 5 && st.g !== 5) ev = ev ? "green3+5" : "green5"; }
+    if (test) ev = "test";
+    if (ev && inRth) stmts.push(["INSERT OR IGNORE INTO board_snap_evt (date, ts, kind, green, body) VALUES (?, ?, ?, ?, ?)", date, ts, ev, g, body]);
+    const purge = !test && inRth && st.purged !== p.date;
+    const dirty = !test && (st.g !== g || (inRth && st.min !== key) || purge);
+    if (!test) { st.min = inRth ? key : st.min; st.g = g; if (purge) st.purged = p.date; }
+    const put = dirty ? this.state.storage.put("snap", st) : null;
+    if (!stmts.length && !purge) return put;
+    return Promise.all([H.snapWrite(this.env, stmts, purge), put]);
   }
   async alarm() {
     const now = Date.now(), p = etParts(now), cfg = await this.conf(), iv = cfg.interval;
@@ -502,6 +521,10 @@ export class GexFeed {
       const a = await this.state.storage.getAlarm();
       if (!a) { const now = Date.now(); await this.state.storage.setAlarm(inSession(etParts(now), cfg.start) ? now + 1000 : nextSessionStart(now, cfg.start)); }
       const b = await this.state.storage.getAlarm(); return J({ ok: true, rearmed: !a, alarm: new Date(b).toISOString() });
+    }
+    if (u.pathname === "/snaptest" && !cfg.live) {
+      try { const { board } = await this.cycle({ manual: true, snapTest: true }); return J({ ok: true, green: board.green_count }); }
+      catch (e) { return J({ ok: false, error: String(e && e.message).slice(0, 200) }, 502); }
     }
     if (u.pathname === "/run") {
       try { const { board, meta } = await this.cycle({ manual: true, store: cfg.live && u.searchParams.get("store") === "1", spotMode: u.searchParams.get("spot") === "premarket" ? "premarket" : "mid" }); return J({ ok: true, meta, board }); }
