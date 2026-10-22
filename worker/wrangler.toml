@@ -1,6 +1,7 @@
 name = "aispyalerts-api"
 main = "src/index.js"
 compatibility_date = "2026-09-08"
+keep_vars = true
 
 [[d1_databases]]
 binding = "DB"
@@ -14,3 +15,18 @@ class_name = "DeliverRetry"
 [[migrations]]
 tag = "v1-deliver-retry"
 new_sqlite_classes = ["DeliverRetry"]
+
+[[durable_objects.bindings]]
+name = "GEX_FEED"
+class_name = "GexFeed"
+
+[[migrations]]
+tag = "v2-gex-feed"
+new_sqlite_classes = ["GexFeed"]
+
+# FEED_MODE (shadow|live, default shadow) and GEX_CHAIN_MODE (quotes|chain, default quotes), GEX_FLIP_STRIDE (default 5; 1 = full sweep) are read from env;
+# set them with `wrangler secret put` so they can flip without a redeploy.
+
+# Backstop: every 5 min, 11:00-21:59 UTC Mon-Fri (covers 7:30-16:00 ET in EDT and EST)
+[triggers]
+crons = ["*/5 11-21 * * 1-5"]

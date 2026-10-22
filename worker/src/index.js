@@ -1,4 +1,6 @@
 import { BOARD_HTML } from "./board_html.js";
+import { GexFeed, H as GEX_H } from "./gexfeed.js";
+export { GexFeed };
 /**
  * AISPYALERTS API — subscribe (webhook + email) + deliver fan-out
  *
@@ -459,7 +461,7 @@ const BOARD_MAX_BYTES = 1000000;
 const BOARD_KEEP = 200;
 const BOARD_USER = "fern";
 const BOARD_H15_KEEP = 30;
-const boardTrim = env => env.DB.prepare("DELETE FROM board_hist15 WHERE bucket NOT IN (SELECT bucket FROM board_hist15 ORDER BY ts DESC, bucket DESC LIMIT ?)").bind(BOARD_H15_KEEP);
+const boardTrim = (env, table = "board_hist15") => env.DB.prepare(`DELETE FROM ${table} WHERE bucket NOT IN (SELECT bucket FROM ${table} ORDER BY ts DESC, bucket DESC LIMIT ?)`).bind(BOARD_H15_KEEP);
 // History slots: 09:30 ET then every 15 min through 16:00. Each slot holds the board AT the mark,
 // or else the latest board published before it on the same day.
 function boardSlotsBetween(aTs, bTs) {
@@ -474,7 +476,7 @@ function boardSlotsBetween(aTs, bTs) {
   }
   return out;
 }
-function boardSlotStmts(env, prevTs, prevBody, newTs, newBody, now) {
+function boardSlotStmts(env, prevTs, prevBody, newTs, newBody, now, table = "board_hist15") {
   const stmts = [];
   for (const sl of boardSlotsBetween(prevTs, newTs)) {
     let ts, body;
@@ -483,7 +485,7 @@ function boardSlotStmts(env, prevTs, prevBody, newTs, newBody, now) {
     else continue;
     let d; try { d = JSON.parse(body); } catch { continue; }
     if (!d || typeof d !== "object") continue;
-    stmts.push(env.DB.prepare("INSERT OR IGNORE INTO board_hist15 (bucket, ts, received_at, summary, body) VALUES (?, ?, ?, ?, ?)").bind(sl.key, ts, now, boardSummary(d), body));
+    stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO ${table} (bucket, ts, received_at, summary, body) VALUES (?, ?, ?, ?, ?)`).bind(sl.key, ts, now, boardSummary(d), body));
   }
   return stmts;
 }
@@ -497,6 +499,7 @@ async function boardEnsure(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_latest (id INTEGER PRIMARY KEY CHECK (id = 1), ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_history (ts TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_shadow_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
   ]);
 }
 let boardReady = false;
@@ -531,6 +534,11 @@ async function handleBoardPut(request, env, origin) {
   if (new TextEncoder().encode(text).length > BOARD_MAX_BYTES) return json({ ok: false, error: "Too large" }, 413, origin);
   let data; try { data = JSON.parse(text); } catch { return json({ ok: false, error: "Invalid JSON" }, 400, origin); }
   if (!data || typeof data !== "object" || Array.isArray(data)) return json({ ok: false, error: "JSON object required" }, 400, origin);
+  const ts = await boardStoreLive(env, data);
+  return json({ ok: true, ts, bytes: text.length }, 200, origin);
+}
+// Live write path shared by PUT /api/board and the GexFeed DO when FEED_MODE=live.
+async function boardStoreLive(env, data) {
   const now = new Date().toISOString();
   const ts = typeof data.generated_et === "string" ? data.generated_et : now;
   const body = JSON.stringify(data);
@@ -542,27 +550,85 @@ async function handleBoardPut(request, env, origin) {
   const slots = prev ? boardSlotStmts(env, prev.ts, prev.body, ts, body, now) : [];
   if (slots.length) stmts.push(...slots, boardTrim(env));
   await env.DB.batch(stmts);
-  return json({ ok: true, ts, bytes: text.length }, 200, origin);
+  return ts;
 }
-async function handlePrivateBoard(request, env, url, rest) {
+GEX_H.storeLive = boardStoreLive;
+GEX_H.slotStmts = (env, table, prevTs, prevBody, newTs, newBody, now) => boardSlotStmts(env, prevTs, prevBody, newTs, newBody, now, table);
+GEX_H.shadowBatch = async (env, slots) => { await boardInit(env); await env.DB.batch([...slots, boardTrim(env, "board_shadow_hist15")]); };
+
+/* ---- short edge/isolate cache for board reads (auth is checked BEFORE any cache lookup) ---- */
+const MICRO = new Map();
+async function cachedRead(ctx, key, ttlS, produce) {
+  const hit = MICRO.get(key), t = Date.now();
+  if (hit && hit.exp > t) return hit;
+  const ck = new Request("https://board-cache.invalid" + key);
+  let cache = null; try { cache = caches.default; } catch {}
+  if (cache) {
+    try {
+      const r = await cache.match(ck);
+      if (r) { const v = { status: r.status, type: r.headers.get("Content-Type"), body: await r.text(), exp: t + ttlS * 1000 }; MICRO.set(key, v); return v; }
+    } catch {}
+  }
+  const v = await produce(); v.exp = t + ttlS * 1000;
+  if (v.status === 200) {
+    if (MICRO.size > 200) MICRO.clear();
+    MICRO.set(key, v);
+    if (cache) { const p = cache.put(ck, new Response(v.body, { headers: { "Content-Type": v.type, "Cache-Control": `public, max-age=${ttlS}` } })).catch(() => {}); if (ctx && ctx.waitUntil) ctx.waitUntil(p); }
+  }
+  return v;
+}
+const BOARD_TTL_S = 3;   // viewers poll every 4 s; the feed writes every 5 s
+function gexStub(env) { return env.GEX_FEED.get(env.GEX_FEED.idFromName("spy")); }
+async function shadowLatest(env, ctx, slug) {
+  const v = await cachedRead(ctx, `/${slug}/shadow/latest`, BOARD_TTL_S, async () => {
+    const r = await gexStub(env).fetch("https://gex/latest");
+    return { status: r.status, type: "application/json; charset=utf-8", body: await r.text() };
+  });
+  return privResp(v.body, v.status, v.type);
+}
+function bearerOk(request, env) {
+  const key = env.BOARD_PUBLISH_KEY, auth = request.headers.get("Authorization") || "";
+  return Boolean(key) && safeEq(auth, `Bearer ${key}`);
+}
+async function handleShadowApi(request, env, ctx, path) {
+  if (!bearerOk(request, env)) return privResp(JSON.stringify({ ok: false, error: "Unauthorized" }), 401, "application/json");
+  const stub = gexStub(env), url = new URL(request.url);
+  if (request.method === "GET" && path === "/api/board/shadow") return shadowLatest(env, ctx, "api");
+  if (request.method === "GET" && path === "/api/board/shadow/status") { const r = await stub.fetch("https://gex/status"); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "POST" && path === "/api/board/shadow/run") { const r = await stub.fetch("https://gex/run" + url.search); MICRO.clear(); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "POST" && path === "/api/board/shadow/ensure") { const r = await stub.fetch("https://gex/ensure"); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "GET" && path === "/api/board/shadow/history15") {
+    await boardInit(env);
+    const { results } = await env.DB.prepare("SELECT bucket, ts, summary FROM board_shadow_hist15 ORDER BY bucket DESC LIMIT 50").all();
+    return privResp(JSON.stringify({ rows: results.map(r => ({ bucket: r.bucket, ts: r.ts, ...JSON.parse(r.summary) })) }), 200, "application/json");
+  }
+  return privResp(JSON.stringify({ ok: false, error: "Not found" }), 404, "application/json");
+}
+async function handlePrivateBoard(request, env, url, rest, ctx) {
   if (!boardAuthOk(request, env)) {
     return privResp("Unauthorized", 401, "text/plain; charset=utf-8", { "WWW-Authenticate": 'Basic realm="board", charset="UTF-8"' });
   }
   if (request.method !== "GET" && request.method !== "HEAD") return privResp("Method not allowed", 405, "text/plain");
   if (rest === "") return privResp(null, 301, "text/plain", { Location: url.pathname + "/" });
   if (rest === "/") return privResp(BOARD_HTML, 200, "text/html; charset=utf-8");
+  if (rest === "/shadow" || rest === "/shadow/latest") return shadowLatest(env, ctx, "b");
   await boardInit(env);
   if (rest === "/latest") {
     const ts = url.searchParams.get("ts");
-    const row = ts
-      ? (await env.DB.prepare("SELECT body FROM board_hist15 WHERE ts = ?").bind(ts).first()) || (await env.DB.prepare("SELECT body FROM board_history WHERE ts = ?").bind(ts).first())
-      : await env.DB.prepare("SELECT body FROM board_latest WHERE id = 1").first();
-    if (!row) return privResp(JSON.stringify({ ok: false, error: "No board yet" }), 404, "application/json");
-    return privResp(row.body, 200, "application/json; charset=utf-8");
+    const v = await cachedRead(ctx, "/b/latest?ts=" + encodeURIComponent(ts || ""), ts ? 60 : BOARD_TTL_S, async () => {
+      const row = ts
+        ? (await env.DB.prepare("SELECT body FROM board_hist15 WHERE ts = ?").bind(ts).first()) || (await env.DB.prepare("SELECT body FROM board_history WHERE ts = ?").bind(ts).first())
+        : await env.DB.prepare("SELECT body FROM board_latest WHERE id = 1").first();
+      return row ? { status: 200, type: "application/json; charset=utf-8", body: row.body } : { status: 404, type: "application/json", body: JSON.stringify({ ok: false, error: "No board yet" }) };
+    });
+    return privResp(v.body, v.status, v.type);
   }
   if (rest === "/history") {
-    const { results } = await env.DB.prepare("SELECT bucket, ts FROM board_hist15 WHERE length(bucket) = 16 ORDER BY bucket DESC LIMIT ?").bind(BOARD_KEEP).all();
-    return privResp(JSON.stringify({ runs: results.map(r => r.ts), slots: results.map(r => r.bucket) }), 200, "application/json; charset=utf-8");
+    const v = await cachedRead(ctx, "/b/history", 10, async () => {
+      const { results } = await env.DB.prepare("SELECT bucket, ts FROM board_hist15 WHERE length(bucket) = 16 ORDER BY bucket DESC LIMIT ?").bind(BOARD_KEEP).all();
+      return { status: 200, type: "application/json; charset=utf-8", body: JSON.stringify({ runs: results.map(r => r.ts), slots: results.map(r => r.bucket) }) };
+    });
+    return privResp(v.body, v.status, v.type);
   }
   if (rest === "/history15") {
     // Fill slots that passed since the last push (pushes may have stopped).
@@ -605,6 +671,10 @@ export default {
       return handleDeliver(request, env, origin, ctx);
     }
 
+    if (path.startsWith("/api/board/shadow")) {
+      return handleShadowApi(request, env, ctx, path);
+    }
+
     if (request.method === "PUT" && path === "/api/board") {
       return handleBoardPut(request, env, origin);
     }
@@ -613,10 +683,15 @@ export default {
     if (slug && slug.length >= 16) {
       const pre = `/b/${slug}`;
       if (url.pathname === pre || url.pathname.startsWith(pre + "/")) {
-        return handlePrivateBoard(request, env, url, url.pathname.slice(pre.length));
+        return handlePrivateBoard(request, env, url, url.pathname.slice(pre.length), ctx);
       }
     }
 
     return json({ ok: false, error: "Not found" }, 404, origin);
+  },
+  // Cron backstop: re-arm the GexFeed alarm if it is missing (DO decides session vs next start).
+  async scheduled(event, env, ctx) {
+    if (!env.GEX_FEED) return;
+    ctx.waitUntil(gexStub(env).fetch("https://gex/ensure").then(r => r.text()).then(t => console.log("gexfeed ensure", t)).catch(e => console.error("gexfeed ensure failed", String(e))));
   },
 };
