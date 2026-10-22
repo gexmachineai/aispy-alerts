@@ -410,7 +410,7 @@ export class GexFeed {
     return this.src;
   }
   stride() { const v = parseInt(this.env.GEX_FLIP_STRIDE || "5", 10); return v > 0 ? v : 5; }
-  mode() { return this.env.FEED_MODE === "live" ? "live" : "shadow"; }
+  mode() { return String(this.env.FEED_MODE || "").trim().toLowerCase() === "live" ? "live" : "shadow"; }
   async loadNotes(day) {
     if (this.notesDay === day && this.notes) return this.notes;
     this.notes = (await this.state.storage.get("notes:" + day)) || newNotesState(); this.notesDay = day;
