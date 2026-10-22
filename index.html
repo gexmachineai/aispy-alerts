@@ -197,7 +197,14 @@
             <label for="senderKey">Sender key</label>
             <input id="senderKey" name="senderKey" type="password" autocomplete="off" required minlength="8" placeholder="Min 8 characters" />
           </div>
-          <button class="btn btn-primary btn-block" type="submit">Subscribe now</button>
+          <div class="form-row terms-row">
+            <label class="terms-label" for="acceptTerms">
+              <input id="acceptTerms" type="checkbox" required aria-describedby="terms-hint" />
+              <span>I've read and agree to the <a href="#disclaimer">Important disclaimer</a> (signals only, not financial advice; I'm responsible for my agent and any trades it places).</span>
+            </label>
+            <p id="terms-hint" class="terms-hint">Please check the box to agree to the disclaimer before subscribing.</p>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" disabled aria-disabled="true">Subscribe now</button>
           <div id="form-message" class="form-message" role="status" aria-live="polite" hidden></div>
           <p class="form-note">Sender key is stored encrypted and never shown again. Used only to authorize alert delivery to your webhook.</p>
         </form>
@@ -220,6 +227,16 @@
 
     const form = document.getElementById("subscribe-form");
     const msg = document.getElementById("form-message");
+    const terms = document.getElementById("acceptTerms");
+    const termsHint = document.getElementById("terms-hint");
+    const submitBtn = form.querySelector('button[type="submit"]');
+    function syncTerms() {
+      submitBtn.disabled = !terms.checked;
+      submitBtn.setAttribute("aria-disabled", String(!terms.checked));
+      termsHint.hidden = terms.checked;
+    }
+    terms.addEventListener("change", syncTerms);
+    syncTerms();
     const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     function showMessage(text, kind) {
@@ -239,6 +256,12 @@
 
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
+      if (!terms.checked) {
+        syncTerms();
+        showMessage("Please agree to the Important disclaimer to subscribe.", "error");
+        terms.focus();
+        return;
+      }
 
       const name = (form.name.value || "").trim();
       const email = (form.email.value || "").trim();
@@ -287,8 +310,8 @@
       } catch (err) {
         showMessage("Network error. Please try again.", "error");
       } finally {
-        btn.disabled = false;
         btn.textContent = prev;
+        syncTerms();
       }
     });
   </script>

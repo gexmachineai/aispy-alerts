@@ -744,3 +744,12 @@ a:hover {
 .text-white {
   color: var(--text);
 }
+
+/* Accept-terms checkbox */
+.terms-row { margin-top: 0.25rem; }
+.form-row .terms-label { display: flex; gap: 0.6rem; align-items: flex-start; font-weight: 400; line-height: 1.45; cursor: pointer; }
+.terms-label input[type="checkbox"] { flex: 0 0 auto; width: 1.25rem; height: 1.25rem; margin: 0.1rem 0 0; accent-color: currentColor; cursor: pointer; }
+.terms-label a { text-decoration: underline; }
+.terms-hint { margin: 0.4rem 0 0; font-size: 0.85rem; opacity: 0.8; }
+.terms-hint[hidden] { display: none; }
+.waitlist-form button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; }
