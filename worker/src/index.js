@@ -499,6 +499,8 @@ async function boardEnsure(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_latest (id INTEGER PRIMARY KEY CHECK (id = 1), ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_history (ts TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_sym_latest (sym TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_qqq_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_shadow_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
   ]);
 }
@@ -553,6 +555,20 @@ async function boardStoreLive(env, data) {
   return ts;
 }
 GEX_H.storeLive = boardStoreLive;
+// Non-SPY live boards (QQQ): D1 board_sym_latest row keyed by symbol + board_<sym>_hist15. Never touches board_latest/board_hist15.
+const SYM_TABLES = { QQQ: "board_qqq_hist15" };
+async function boardStoreSym(env, sym, data, body) {
+  const table = SYM_TABLES[sym]; if (!table) throw new Error("unknown symbol " + sym);
+  const now = new Date().toISOString(), ts = typeof data.generated_et === "string" ? data.generated_et : now;
+  await boardInit(env);
+  const prev = await env.DB.prepare("SELECT ts, body FROM board_sym_latest WHERE sym = ?").bind(sym).first();
+  const stmts = [env.DB.prepare("INSERT INTO board_sym_latest (sym, ts, received_at, body) VALUES (?, ?, ?, ?) ON CONFLICT(sym) DO UPDATE SET ts = excluded.ts, received_at = excluded.received_at, body = excluded.body").bind(sym, ts, now, body)];
+  const slots = prev ? boardSlotStmts(env, prev.ts, prev.body, ts, body, now, table) : [];
+  if (slots.length) stmts.push(...slots, boardTrim(env, table));
+  await env.DB.batch(stmts);
+  return ts;
+}
+GEX_H.storeSym = boardStoreSym;
 GEX_H.slotStmts = (env, table, prevTs, prevBody, newTs, newBody, now) => boardSlotStmts(env, prevTs, prevBody, newTs, newBody, now, table);
 GEX_H.shadowBatch = async (env, slots) => { await boardInit(env); await env.DB.batch([...slots, boardTrim(env, "board_shadow_hist15")]); };
 
@@ -578,7 +594,62 @@ async function cachedRead(ctx, key, ttlS, produce) {
   return v;
 }
 const BOARD_TTL_S = 3;   // viewers poll every 4 s; the feed writes every 5 s
-function gexStub(env) { return env.GEX_FEED.get(env.GEX_FEED.idFromName("spy")); }
+function gexStub(env) { return env.GEX_FEED.get(env.GEX_FEED.idFromName("spy")); }   // SPY keeps its original instance name/state
+const SYM_FEEDS = new Set(["QQQ"]);
+function symStub(env, sym) {   // one DO instance per extra symbol; the header tells a fresh instance which symbol it is
+  const st = env.GEX_FEED.get(env.GEX_FEED.idFromName(sym));
+  return { fetch: (u, init = {}) => st.fetch(u, { ...init, headers: { ...(init.headers || {}), "x-gex-sym": sym } }) };
+}
+function reqSym(url) { const s = String(url.searchParams.get("sym") || "").toUpperCase(); return SYM_FEEDS.has(s) ? s : null; }
+// Bearer API for extra symbols: GET /api/board/sym/QQQ[/status|/history15], POST /api/board/sym/QQQ/run[?store=1] | /ensure
+async function handleSymApi(request, env, ctx, path) {
+  if (!bearerOk(request, env)) return privResp(JSON.stringify({ ok: false, error: "Unauthorized" }), 401, "application/json");
+  const m = /^\/api\/board\/sym\/([A-Za-z]+)(\/[a-z0-9]+)?$/.exec(path), sym = m && m[1].toUpperCase(), sub = (m && m[2]) || "";
+  if (!m || !SYM_FEEDS.has(sym)) return privResp(JSON.stringify({ ok: false, error: "Not found" }), 404, "application/json");
+  const stub = symStub(env, sym), url = new URL(request.url);
+  if (request.method === "GET" && sub === "") { const r = await stub.fetch("https://gex/latest"); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "GET" && sub === "/status") { const r = await stub.fetch("https://gex/status"); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "POST" && sub === "/run") { const r = await stub.fetch("https://gex/run?store=" + (url.searchParams.get("store") === "1" ? "1" : "0")); MICRO.clear(); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "POST" && sub === "/ensure") { const r = await stub.fetch("https://gex/ensure"); return privResp(await r.text(), r.status, "application/json"); }
+  if (request.method === "GET" && sub === "/history15") {
+    await boardInit(env);
+    const { results } = await env.DB.prepare(`SELECT bucket, ts, summary FROM ${SYM_TABLES[sym]} ORDER BY bucket DESC LIMIT 50`).all();
+    return privResp(JSON.stringify({ rows: results.map(r => ({ bucket: r.bucket, ts: r.ts, ...JSON.parse(r.summary) })) }), 200, "application/json");
+  }
+  return privResp(JSON.stringify({ ok: false, error: "Not found" }), 404, "application/json");
+}
+// Private page reads for ?sym=QQQ (same response shapes as the SPY routes).
+async function symBoardRead(env, url, rest, ctx, sym) {
+  const table = SYM_TABLES[sym]; await boardInit(env);
+  if (rest === "/latest") {
+    const ts = url.searchParams.get("ts");
+    const v = await cachedRead(ctx, `/b/${sym}/latest?ts=` + encodeURIComponent(ts || ""), ts ? 60 : BOARD_TTL_S, async () => {
+      const row = ts ? await env.DB.prepare(`SELECT body FROM ${table} WHERE ts = ?`).bind(ts).first() : await env.DB.prepare("SELECT body FROM board_sym_latest WHERE sym = ?").bind(sym).first();
+      return row ? { status: 200, type: "application/json; charset=utf-8", body: row.body } : { status: 404, type: "application/json", body: JSON.stringify({ ok: false, error: `No ${sym} data yet` }) };
+    });
+    return privResp(v.body, v.status, v.type);
+  }
+  if (rest === "/history") {
+    const v = await cachedRead(ctx, `/b/${sym}/history`, 10, async () => {
+      const { results } = await env.DB.prepare(`SELECT bucket, ts FROM ${table} WHERE length(bucket) = 16 ORDER BY bucket DESC LIMIT ?`).bind(BOARD_KEEP).all();
+      return { status: 200, type: "application/json; charset=utf-8", body: JSON.stringify({ runs: results.map(r => r.ts), slots: results.map(r => r.bucket) }) };
+    });
+    return privResp(v.body, v.status, v.type);
+  }
+  if (rest === "/history15") {
+    const L = await env.DB.prepare("SELECT ts, body FROM board_sym_latest WHERE sym = ?").bind(sym).first();
+    if (L) { const fill = boardSlotStmts(env, L.ts, L.body, new Date().toISOString(), null, new Date().toISOString(), table); if (fill.length) await env.DB.batch([...fill, boardTrim(env, table)]); }
+    const lim = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 200);
+    const before = url.searchParams.get("before");
+    const q = before
+      ? env.DB.prepare(`SELECT bucket, ts, summary FROM ${table} WHERE length(bucket) = 16 AND bucket < ? ORDER BY bucket DESC LIMIT ?`).bind(before, lim + 1)
+      : env.DB.prepare(`SELECT bucket, ts, summary FROM ${table} WHERE length(bucket) = 16 ORDER BY bucket DESC LIMIT ?`).bind(lim + 1);
+    const { results } = await q.all();
+    const more = results.length > lim, rows = results.slice(0, lim).map(r => ({ bucket: r.bucket, ts: r.ts, ...JSON.parse(r.summary) }));
+    return privResp(JSON.stringify({ rows, next: more ? rows[rows.length - 1].bucket : null }), 200, "application/json; charset=utf-8");
+  }
+  return privResp("Not found", 404, "text/plain");
+}
 async function shadowLatest(env, ctx, slug) {
   const v = await cachedRead(ctx, `/${slug}/shadow/latest`, BOARD_TTL_S, async () => {
     const r = await gexStub(env).fetch("https://gex/latest");
@@ -612,6 +683,8 @@ async function handlePrivateBoard(request, env, url, rest, ctx) {
   if (rest === "") return privResp(null, 301, "text/plain", { Location: url.pathname + "/" });
   if (rest === "/") return privResp(BOARD_HTML, 200, "text/html; charset=utf-8");
   if (rest === "/shadow" || rest === "/shadow/latest") return shadowLatest(env, ctx, "b");
+  const xs = reqSym(url);
+  if (xs && (rest === "/latest" || rest === "/history" || rest === "/history15")) return symBoardRead(env, url, rest, ctx, xs);
   await boardInit(env);
   if (rest === "/latest") {
     const ts = url.searchParams.get("ts");
@@ -675,6 +748,10 @@ export default {
       return handleShadowApi(request, env, ctx, path);
     }
 
+    if (path.startsWith("/api/board/sym/")) {
+      return handleSymApi(request, env, ctx, path);
+    }
+
     if (request.method === "PUT" && path === "/api/board") {
       return handleBoardPut(request, env, origin);
     }
@@ -693,5 +770,6 @@ export default {
   async scheduled(event, env, ctx) {
     if (!env.GEX_FEED) return;
     ctx.waitUntil(gexStub(env).fetch("https://gex/ensure").then(r => r.text()).then(t => console.log("gexfeed ensure", t)).catch(e => console.error("gexfeed ensure failed", String(e))));
+    for (const s of SYM_FEEDS) ctx.waitUntil(symStub(env, s).fetch("https://gex/ensure").then(r => r.text()).then(t => console.log("gexfeed ensure " + s, t)).catch(e => console.error("gexfeed ensure failed " + s, String(e))));
   },
 };

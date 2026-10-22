@@ -9,6 +9,12 @@ const TRADIER = "https://api.tradier.com/v1";
 export const H = {};
 const HTTP_TIMEOUT_MS = 8000;
 export const INTERVAL_MS = 5000;
+/** Per-symbol feed config. SPY = original shadow feed (unchanged). QQQ = RTH-only live feed into its own storage. */
+export const SYMS = {
+  SPY: { sym: "SPY", interval: 5000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: false, greenFlag: true },
+  // QQQ trades ~0.9x SPY with $1 0DTE strikes near the money, so the same absolute +/-$15 window (~31 strikes) fits.
+  QQQ: { sym: "QQQ", interval: 10000, start: 9 * 3600 + 30 * 60, premarket: false, win: 15, live: true, greenFlag: false },
+};
 
 // NYSE full-day closures (same list as schwab_feed.py). Early closes not modelled.
 export const NYSE_HOLIDAYS = new Set(["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
@@ -40,10 +46,10 @@ function addDays(date, n) { const [y, m, d] = date.split("-").map(Number); retur
 function dowOf(date) { const [y, m, d] = date.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); }
 export function tradingDay(date) { const w = dowOf(date); return w >= 1 && w <= 5 && !NYSE_HOLIDAYS.has(date); }
 export const SESSION_START = 7 * 3600 + 30 * 60, RTH_START = 9 * 3600 + 30 * 60, SESSION_END = 16 * 3600;
-export function inSession(p) { return tradingDay(p.date) && p.secs >= SESSION_START && p.secs < SESSION_END; }
-export function nextSessionStart(ms) {
+export function inSession(p, start = SESSION_START) { return tradingDay(p.date) && p.secs >= start && p.secs < SESSION_END; }
+export function nextSessionStart(ms, start = SESSION_START) {
   let d = etParts(ms).date;
-  for (let i = 0; i < 15; i++, d = addDays(d, 1)) { if (!tradingDay(d)) continue; const t = etEpoch(d, 7, 30); if (t > ms) return t; }
+  for (let i = 0; i < 15; i++, d = addDays(d, 1)) { if (!tradingDay(d)) continue; const t = etEpoch(d, Math.floor(start / 3600), Math.floor(start / 60) % 60); if (t > ms) return t; }
   return ms + 3600e3;
 }
 function pyUtcIso(ms) {   // datetime.fromtimestamp(ms/1000, utc).isoformat()
@@ -156,7 +162,7 @@ export function computeBoard(ins, spot, spotTime, prevClose, quotes, rng, nowMs,
   const dte = Math.round((Date.parse(exp + "T00:00:00Z") - Date.parse(now.date + "T00:00:00Z")) / 86400e3);
   const u = upd.filter(Boolean); let umax = u[0]; for (const x of u) if (x > umax) umax = x;
   return {
-    schema: "bloombot-gex-board/v1", symbol: "SPY", expiration: exp, dte,
+    schema: "bloombot-gex-board/v1", symbol: opts.symbol || "SPY", expiration: exp, dte,
     generated_et: isoET(now), generated_label: `${now.date} ${now.hm} ET`,
     spot: pyRound(spot, 3), spot_trade_time_utc: spotTime, prev_close: prevClose,
     quotes_updated_utc_max: umax, window: [strikes[0], strikes[strikes.length - 1]],
@@ -274,7 +280,7 @@ function nextLine(s, b) {
 /* ---------------- Tradier source (TradierSource, gamma_mode bs_mid) ---------------- */
 export class AuthError extends Error {}
 export class Tradier {
-  constructor(token, opts = {}) { this.token = token; this.win = WINDOW; this.exp = null; this.expDay = null; this.rng = null; this.rngDay = null; this.pm = null; this.strikes = null; this.chainMode = opts.chainMode || "chain"; this.reqs = 0; }
+  constructor(token, opts = {}) { this.token = token; this.sym = opts.symbol || "SPY"; this.win = opts.win || WINDOW; this.exp = null; this.expDay = null; this.rng = null; this.rngDay = null; this.pm = null; this.strikes = null; this.chainMode = opts.chainMode || "chain"; this.reqs = 0; }
   async get(path, params, method = "GET") {
     const qs = new URLSearchParams(params).toString(); this.reqs++;
     let r; const ac = new AbortController(), tm = setTimeout(() => ac.abort(), HTTP_TIMEOUT_MS);   // cleared, so the DO isn't held open 8 s
@@ -291,7 +297,7 @@ export class Tradier {
   }
   async expiration(today) {
     if (this.expDay === today && this.exp) return this.exp;
-    let d = ((await this.get("/markets/options/expirations", { symbol: "SPY", includeAllRoots: "true" })).expirations || {}).date || [];
+    let d = ((await this.get("/markets/options/expirations", { symbol: this.sym, includeAllRoots: "true" })).expirations || {}).date || [];
     d = typeof d === "string" ? [d] : d;
     const fut = d.filter(x => x >= today).sort();
     if (!fut.length) throw new Error("no expirations");
@@ -304,7 +310,7 @@ export class Tradier {
       return [c[1], c[2] + " (cached)"];
     }
     try {
-      const j = await this.get("/markets/timesales", { symbol: "SPY", interval: "1min", start: `${now.date} 04:00`, end: `${now.date} ${now.hm}`, session_filter: "all" });
+      const j = await this.get("/markets/timesales", { symbol: this.sym, interval: "1min", start: `${now.date} 04:00`, end: `${now.date} ${now.hm}`, session_filter: "all" });
       let d = (j.series || {}).data || []; d = Array.isArray(d) ? d : [d];
       if (d.length) {
         const last = d[d.length - 1], m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(last.time);
@@ -319,7 +325,7 @@ export class Tradier {
     if (this.rngDay === now.date && this.rng) return this.rng;
     if (now.secs < 9 * 3600 + 35 * 60) return null;
     try {
-      const j = await this.get("/markets/timesales", { symbol: "SPY", interval: "5min", start: `${now.date} 09:30`, end: `${now.date} 09:35`, session_filter: "open" });
+      const j = await this.get("/markets/timesales", { symbol: this.sym, interval: "5min", start: `${now.date} 09:30`, end: `${now.date} 09:35`, session_filter: "open" });
       let d = (j.series || {}).data || []; d = Array.isArray(d) ? d : [d];
       for (const b of d) if (String(b.time || "").endsWith("09:30:00")) { this.rng = { high: num(b.high), low: num(b.low), bar_start_et: "09:30" }; this.rngDay = now.date; return this.rng; }
     } catch (e) { if (e instanceof AuthError) throw e; console.warn("tradier timesales failed", e && e.message); }
@@ -334,19 +340,19 @@ export class Tradier {
   }
   async options(exp, spot) {
     if (this.chainMode === "quotes") {   // only the window's contracts (smaller JSON → less CPU). Same fields as the chain.
-      if (!this.strikes || Date.now() - this.strikesAt > 1800e3) { this.strikesAt = Date.now(); let s = ((await this.get("/markets/options/strikes", { symbol: "SPY", expiration: exp })).strikes || {}).strike || []; this.strikes = (Array.isArray(s) ? s : [s]).map(Number); }
+      if (!this.strikes || Date.now() - this.strikesAt > 1800e3) { this.strikesAt = Date.now(); let s = ((await this.get("/markets/options/strikes", { symbol: this.sym, expiration: exp })).strikes || {}).strike || []; this.strikes = (Array.isArray(s) ? s : [s]).map(Number); }
       const ymd = exp.slice(2).replace(/-/g, ""), syms = [];
-      for (const k of this.strikes) if (Math.abs(k - spot) <= this.win + 0.5) for (const c of ["C", "P"]) syms.push(`SPY${ymd}${c}${String(Math.round(k * 1000)).padStart(8, "0")}`);
+      for (const k of this.strikes) if (Math.abs(k - spot) <= this.win + 0.5) for (const c of ["C", "P"]) syms.push(`${this.sym}${ymd}${c}${String(Math.round(k * 1000)).padStart(8, "0")}`);
       if (!syms.length) return [];
       const o = ((await this.get("/markets/quotes", { symbols: syms.join(","), greeks: "true" }, "POST")).quotes || {}).quote || [];
       return Array.isArray(o) ? o : [o];
     }
-    const o = ((await this.get("/markets/options/chains", { symbol: "SPY", expiration: exp, greeks: "true" })).options || {}).option || [];
+    const o = ((await this.get("/markets/options/chains", { symbol: this.sym, expiration: exp, greeks: "true" })).options || {}).option || [];
     return Array.isArray(o) ? o : [o];
   }
   async fetch(spotMode = "mid") {
     const t0 = Date.now(); let now = etParts(t0); const today = now.date;
-    const q = (await this.get("/markets/quotes", { symbols: "SPY" })).quotes.quote;
+    const q = (await this.get("/markets/quotes", { symbols: this.sym })).quotes.quote;
     const b = num(q.bid), a = num(q.ask);
     let spot = b > 0 && a > 0 && spotMode === "mid" ? (b + a) / 2 : num(q.last);
     this.spotSource = b > 0 && a > 0 && spotMode === "mid" ? "mid" : "last";
@@ -389,9 +395,18 @@ export function greenFlagCheck(st, b) {
 
 /* ---------------- Durable Object: one instance ("spy") drives the 5 s loop via alarms ---------------- */
 export class GexFeed {
-  constructor(state, env) { this.state = state; this.env = env; this.src = null; this.notes = null; this.notesDay = null; this.fails = 0; this.gf = null; }
+  constructor(state, env) { this.state = state; this.env = env; this.cfg = null; this.src = null; this.notes = null; this.notesDay = null; this.fails = 0; this.gf = null; }
+  /** Symbol comes from the ?sym= the Worker passes (persisted so alarms know it). Default/legacy instance = SPY. */
+  async conf(req) {
+    if (!this.cfg) { const s = (await this.state.storage.get("sym")) || "SPY"; this.cfg = SYMS[s] || SYMS.SPY; }
+    const want = req && req.headers.get("x-gex-sym");
+    if (want && SYMS[want] && want !== this.cfg.sym) { this.cfg = SYMS[want]; this.src = null; }
+    if (want && SYMS[want] && want !== "SPY") await this.state.storage.put("sym", want);
+    return this.cfg;
+  }
   source() {
-    if (!this.src) this.src = new Tradier(this.env.TRADIER_TOKEN, { chainMode: this.env.GEX_CHAIN_MODE || "quotes" });
+    const c = this.cfg || SYMS.SPY;
+    if (!this.src) this.src = new Tradier(this.env.TRADIER_TOKEN, { chainMode: this.env.GEX_CHAIN_MODE || "quotes", symbol: c.sym, win: c.win });
     return this.src;
   }
   stride() { const v = parseInt(this.env.GEX_FLIP_STRIDE || "5", 10); return v > 0 ? v : 5; }
@@ -405,19 +420,19 @@ export class GexFeed {
   }
   /** One cycle (schwab_feed.main loop body). opts.manual: shadow-only, notes not persisted. */
   async cycle(opts = {}) {
-    const t0 = Date.now(), p0 = etParts(t0), manual = !!opts.manual;
-    const pmLive = opts.spotMode ? opts.spotMode === "premarket" : (tradingDay(p0.date) && p0.secs >= SESSION_START && p0.secs < RTH_START);
+    const t0 = Date.now(), p0 = etParts(t0), manual = !!opts.manual, cfg = await this.conf();
+    const pmLive = !cfg.premarket ? false : opts.spotMode ? opts.spotMode === "premarket" : (tradingDay(p0.date) && p0.secs >= SESSION_START && p0.secs < RTH_START);
     const src = this.source(); src.reqs = 0;
     const f = await src.fetch(pmLive ? "premarket" : "mid");
     const tFetch = Date.now();
     let b;
     if (pmLive) {
-      b = computeBoard(f.ins, f.spot, f.spotTime, f.prevClose, f.quotes, null, Date.now(), { flipStride: this.stride() });
+      b = computeBoard(f.ins, f.spot, f.spotTime, f.prevClose, f.quotes, null, Date.now(), { flipStride: this.stride(), symbol: cfg.sym });
       b.premarket = true; b.range_5m = null;
       if (b.boxes["5M Range"]) b.boxes["5M Range"].green = null;
     } else {
       const rng = await src.range5m(etParts(Date.now()));
-      b = computeBoard(f.ins, f.spot, f.spotTime, f.prevClose, f.quotes, rng, Date.now(), { flipStride: this.stride() });
+      b = computeBoard(f.ins, f.spot, f.spotTime, f.prevClose, f.quotes, rng, Date.now(), { flipStride: this.stride(), symbol: cfg.sym });
     }
     addEstOi(b);
     const day = b.generated_et.slice(0, 10);
@@ -428,11 +443,16 @@ export class GexFeed {
     } catch (e) { console.warn("notes error", e && e.message); if (!("notes" in b)) b.notes = []; if (!("next" in b)) b.next = null; }
     const meta = (await this.state.storage.get("meta")) || { cycle: 0 };
     meta.cycle = (meta.day === p0.date ? meta.cycle : 0) + 1; meta.day = p0.date;
-    b.feed = { premarket_live: pmLive, spot_source: src.spotSource ?? null, source: "tradier", gamma: "bs_mid", interval_s: INTERVAL_MS / 1000, cycle: meta.cycle };
+    b.feed = { premarket_live: pmLive, spot_source: src.spotSource ?? null, source: "tradier", gamma: "bs_mid", interval_s: cfg.interval / 1000, cycle: meta.cycle, ...(cfg.live ? { symbol: cfg.sym, mode: "live" } : {}) };
     const body = JSON.stringify(b);
+    const tasks = [];
+    if (cfg.live) {
+      // QQQ etc.: straight to its own live storage (DO "board_latest" + D1 board_sym_latest/board_<sym>_hist15). Never SPY tables.
+      // Manual runs only return the board unless opts.store (so an off-hours test doesn't replace the last session board).
+      if (!manual || opts.store) { await this.state.storage.put("board_latest", body); await H.storeSym(this.env, cfg.sym, b, body); }
+    } else {
     const prev = await this.state.storage.get("board_shadow_latest");
     await this.state.storage.put("board_shadow_latest", body);
-    const tasks = [];
     if (!manual) {
       // shadow D1 history: only 15-min slots (09:30..16:00), never board_latest/board_hist15
       if (prev) { try { const slots = H.slotStmts(this.env, "board_shadow_hist15", JSON.parse(prev).generated_et, prev, b.generated_et, body, new Date().toISOString()); if (slots.length) tasks.push(H.shadowBatch(this.env, slots)); } catch (e) { console.warn("shadow hist", e && e.message); } }
@@ -451,38 +471,40 @@ export class GexFeed {
       }
       tasks.push(this.state.storage.put("gf", this.gf));
     }
+    }
     await Promise.all(tasks);
     const tEnd = Date.now();
-    Object.assign(meta, { last_et: b.generated_et, mode: this.mode(), manual, wall_ms: tEnd - t0, fetch_ms: tFetch - t0, requests: src.reqs, contracts: f.quotes.size, chain_options: f.nOpts, chain_mode: src.chainMode, last_error: null, spot: b.spot });
+    Object.assign(meta, { sym: cfg.sym, last_et: b.generated_et, mode: cfg.live ? "live" : this.mode(), manual, wall_ms: tEnd - t0, fetch_ms: tFetch - t0, requests: src.reqs, contracts: f.quotes.size, chain_options: f.nOpts, chain_mode: src.chainMode, last_error: null, spot: b.spot });
     if (!manual) await this.state.storage.put("meta", meta);
-    console.log(JSON.stringify({ gexfeed: "cycle", cycle: meta.cycle, manual, pm: pmLive, mode: this.mode(), wall_ms: tEnd - t0, fetch_ms: tFetch - t0, req: src.reqs, n: f.quotes.size, spot: b.spot, net: b.net_gex, flip: b.flip, green: b.green_count }));
+    console.log(JSON.stringify({ gexfeed: "cycle", sym: cfg.sym, cycle: meta.cycle, manual, pm: pmLive, mode: cfg.live ? "live" : this.mode(), wall_ms: tEnd - t0, fetch_ms: tFetch - t0, req: src.reqs, n: f.quotes.size, spot: b.spot, net: b.net_gex, flip: b.flip, green: b.green_count }));
     return { board: b, meta };
   }
   async alarm() {
-    const now = Date.now(), p = etParts(now);
-    if (!inSession(p)) { await this.state.storage.setAlarm(nextSessionStart(now)); return; }
-    let next = now + INTERVAL_MS;
-    try { await this.cycle(); this.fails = 0; next = Math.max(Date.now() + 250, now + INTERVAL_MS); }
+    const now = Date.now(), p = etParts(now), cfg = await this.conf(), iv = cfg.interval;
+    if (!inSession(p, cfg.start)) { await this.state.storage.setAlarm(nextSessionStart(now, cfg.start)); return; }
+    let next = now + iv;
+    try { await this.cycle(); this.fails = 0; next = Math.max(Date.now() + 250, now + iv); }
     catch (e) {
       this.fails += 1; const back = Math.min(30, 5 * 2 ** Math.min(this.fails, 6)) * 1000; next = Date.now() + back;
       if (e instanceof AuthError) next = Date.now() + 300e3;
-      console.error(JSON.stringify({ gexfeed: "cycle_error", fails: this.fails, err: String(e && e.message).slice(0, 200) }));
+      console.error(JSON.stringify({ gexfeed: "cycle_error", sym: cfg.sym, fails: this.fails, err: String(e && e.message).slice(0, 200) }));
       try { const m = (await this.state.storage.get("meta")) || {}; m.last_error = { at: new Date().toISOString(), msg: String(e && e.message).slice(0, 200) }; await this.state.storage.put("meta", m); } catch {}
     }
     await this.state.storage.setAlarm(next);
   }
   async fetch(request) {
     const u = new URL(request.url);
+    const cfg = await this.conf(request);
     const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json; charset=utf-8" } });
-    if (u.pathname === "/latest") { const b = await this.state.storage.get("board_shadow_latest"); return b ? new Response(b, { headers: { "Content-Type": "application/json; charset=utf-8" } }) : J({ ok: false, error: "No shadow board yet" }, 404); }
-    if (u.pathname === "/status") { const a = await this.state.storage.getAlarm(); return J({ ok: true, mode: this.mode(), alarm: a ? new Date(a).toISOString() : null, meta: (await this.state.storage.get("meta")) || null }); }
+    if (u.pathname === "/latest") { const b = await this.state.storage.get(cfg.live ? "board_latest" : "board_shadow_latest"); return b ? new Response(b, { headers: { "Content-Type": "application/json; charset=utf-8" } }) : J({ ok: false, error: cfg.live ? `No ${cfg.sym} data yet` : "No shadow board yet" }, 404); }
+    if (u.pathname === "/status") { const a = await this.state.storage.getAlarm(); return J({ ok: true, sym: cfg.sym, mode: cfg.live ? "live" : this.mode(), alarm: a ? new Date(a).toISOString() : null, meta: (await this.state.storage.get("meta")) || null }); }
     if (u.pathname === "/ensure") {
       const a = await this.state.storage.getAlarm();
-      if (!a) { const now = Date.now(); await this.state.storage.setAlarm(inSession(etParts(now)) ? now + 1000 : nextSessionStart(now)); }
+      if (!a) { const now = Date.now(); await this.state.storage.setAlarm(inSession(etParts(now), cfg.start) ? now + 1000 : nextSessionStart(now, cfg.start)); }
       const b = await this.state.storage.getAlarm(); return J({ ok: true, rearmed: !a, alarm: new Date(b).toISOString() });
     }
     if (u.pathname === "/run") {
-      try { const { board, meta } = await this.cycle({ manual: true, spotMode: u.searchParams.get("spot") === "premarket" ? "premarket" : "mid" }); return J({ ok: true, meta, board }); }
+      try { const { board, meta } = await this.cycle({ manual: true, store: cfg.live && u.searchParams.get("store") === "1", spotMode: u.searchParams.get("spot") === "premarket" ? "premarket" : "mid" }); return J({ ok: true, meta, board }); }
       catch (e) { return J({ ok: false, error: String(e && e.message).slice(0, 200) }, 502); }
     }
     return J({ ok: false, error: "not found" }, 404);
