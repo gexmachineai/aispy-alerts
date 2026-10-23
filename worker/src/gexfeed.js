@@ -480,11 +480,11 @@ export class GexFeed {
     console.log(JSON.stringify({ gexfeed: "cycle", sym: cfg.sym, cycle: meta.cycle, manual, pm: pmLive, mode: cfg.live ? "live" : this.mode(), wall_ms: tEnd - t0, fetch_ms: tFetch - t0, req: src.reqs, n: f.quotes.size, spot: b.spot, net: b.net_gex, flip: b.flip, green: b.green_count }));
     return { board: b, meta };
   }
-  /** SPY board snapshots -> D1: one per ET minute 09:30-16:00 (board_snap_min) + green_count events (board_snap_evt). test=true writes date "test-YYYY-MM-DD", no state change. */
+  /** SPY board snapshots -> D1: one per ET minute 07:30-16:00 (feed session) (board_snap_min) + green_count events (board_snap_evt). test=true writes date "test-YYYY-MM-DD", no state change. */
   async snap(b, body, test) {
     const p = etParts(Date.now()), g = typeof b.green_count === "number" ? b.green_count : null;
     const st = this.snapSt = this.snapSt || (await this.state.storage.get("snap")) || { min: null, g: null, purged: null };
-    const date = (test ? "test-" : "") + p.date, inRth = test || (tradingDay(p.date) && p.secs >= 34200 && p.secs <= 57659);
+    const date = (test ? "test-" : "") + p.date, inRth = test || (tradingDay(p.date) && p.secs >= SESSION_START && p.secs <= 57659);
     const stmts = [], ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`, key = date + " " + p.hm;
     if (inRth && st.min !== key) stmts.push(["INSERT OR IGNORE INTO board_snap_min (date, hm, ts, green, body) VALUES (?, ?, ?, ?, ?)", date, p.hm, ts, g, body]);
     let ev = null;
