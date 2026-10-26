@@ -606,10 +606,11 @@ async function snapRead(env, url, rest) {
   }
   if (rest === "/snaps/events") {
     const ts = q("ts");
-    if (ts) { const r = await env.DB.prepare("SELECT body FROM board_snap_evt WHERE ts = ? ORDER BY kind LIMIT 1").bind(ts).first();
+    if (ts) { const r = await env.DB.prepare("SELECT body FROM board_snap_evt WHERE ts = ? AND kind LIKE ? ORDER BY kind LIMIT 1").bind(ts, (q("kind") || "").replace(/[%_]/g, "") + "%").first();
       return r ? privResp(r.body, 200, "application/json; charset=utf-8") : J({ ok: false, error: "no event" }, 404); }
-    const { results } = okD(date) ? await env.DB.prepare("SELECT date, ts, kind, green FROM board_snap_evt WHERE date = ? ORDER BY ts").bind(date).all()
-      : await env.DB.prepare("SELECT date, ts, kind, green FROM board_snap_evt ORDER BY ts DESC LIMIT 200").all();
+    const kp = (q("kind") || "").replace(/[%_]/g, "") + "%", full = q("body") === "1" ? ", body" : "";
+    const { results } = okD(date) ? await env.DB.prepare(`SELECT date, ts, kind, green${full} FROM board_snap_evt WHERE date = ? AND kind LIKE ? ORDER BY ts LIMIT 2000`).bind(date, kp).all()
+      : await env.DB.prepare(`SELECT date, ts, kind, green${full} FROM board_snap_evt WHERE kind LIKE ? ORDER BY ts DESC LIMIT 200`).bind(kp).all();
     return J({ ok: true, events: results });
   }
   return null;
@@ -817,6 +818,7 @@ export default {
   // Cron backstop: re-arm the GexFeed alarm if it is missing (DO decides session vs next start).
   async scheduled(event, env, ctx) {
     if (!env.GEX_FEED) return;
+    ctx.waitUntil(gexStub(env).fetch("https://gex/stalecheck").then(r => r.text()).then(t => console.log("gexfeed stalecheck", t)).catch(e => console.error("stalecheck failed", String(e))));
     ctx.waitUntil(gexStub(env).fetch("https://gex/ensure").then(r => r.text()).then(t => console.log("gexfeed ensure", t)).catch(e => console.error("gexfeed ensure failed", String(e))));
     for (const s of SYM_FEEDS) ctx.waitUntil(symStub(env, s).fetch("https://gex/ensure").then(r => r.text()).then(t => console.log("gexfeed ensure " + s, t)).catch(e => console.error("gexfeed ensure failed " + s, String(e))));
   },

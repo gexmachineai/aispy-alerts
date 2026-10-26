@@ -5,6 +5,7 @@
  */
 export const WINDOW = 15, WALL_K = 10000, METER_K = 200000, SIG_K = 100000, BLOCK_FRAC = 0.5;
 const TRADIER = "https://api.tradier.com/v1";
+import { wakeEval, wakePayload, route as wakeRoute } from "./wake.js";
 /** D1 helpers injected by index.js (slotStmts, shadowBatch, storeLive). */
 export const H = {};
 const HTTP_TIMEOUT_MS = 8000;
@@ -374,7 +375,7 @@ export class Tradier {
         open_interest: int(o.open_interest), volume: int(o.volume), implied_volatility: iv, delta: num(g.delta), bid_price: bid, ask_price: ask,
         mark_price: bid && ask ? (bid + ask) / 2 : num(o.last), updated_at: pyUtcIso(o.trade_date || Date.now()) });
     }
-    return { ins, spot, spotTime, prevClose, quotes, nOpts: opts.length };
+    return { ins, spot, spotTime, prevClose, quotes, nOpts: opts.length, vol: int(q.volume) };
   }
 }
 
@@ -471,7 +472,9 @@ export class GexFeed {
       }
       tasks.push(this.state.storage.put("gf", this.gf));
     }
-    if (!manual || opts.snapTest) { try { const sp = await this.snap(b, body, !!opts.snapTest); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
+    let wrows = [];
+    if (!manual) { try { wrows = await this.wake(b, f.vol, tasks); } catch (e) { console.warn("wake", e && e.message); } }
+    if (!manual || opts.snapTest) { try { const sp = await this.snap(b, body, !!opts.snapTest, wrows); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
     }
     await Promise.all(tasks);
     const tEnd = Date.now();
@@ -481,7 +484,44 @@ export class GexFeed {
     return { board: b, meta };
   }
   /** SPY board snapshots -> D1: one per ET minute 07:30-16:00 (feed session) (board_snap_min) + green_count events (board_snap_evt). test=true writes date "test-YYYY-MM-DD", no state change. */
-  async snap(b, body, test) {
+  /** Wake triggers (SHADOW). Returns board_snap_evt rows for the snap batch; POSTs only if WAKE_ENABLED==="1" AND per-bot URL secret. */
+  async wake(b, vol, tasks) {
+    const now = Date.now(), p = etParts(now);
+    if (!inSession(p)) return [];
+    const st0 = this.wakeSt = this.wakeSt || (await this.state.storage.get("wake")) || null;
+    const r = wakeEval(st0, b, vol, now, p.date + " " + p.hm, { offRule: this.env.WAKE_OFF_RULE || "v2" });
+    this.wakeSt = r.st;
+    if (r.dirty) tasks.push(this.state.storage.put("wake", r.st));
+    return this.wakeEmit(r.perBot, b, r.volInfo, now, p);
+  }
+  wakeEmit(perBot, b, volInfo, now, p) {
+    const rows = [], ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`;
+    for (const bot in perBot) {
+      const pl = wakePayload(bot, perBot[bot], b, volInfo, now, "https://aispyalerts.com/");
+      rows.push(["INSERT OR IGNORE INTO board_snap_evt (date, ts, kind, green, body) VALUES (?, ?, ?, ?, ?)", p.date, ts, `wake:${bot}:${pl.kinds}`, b ? b.green_count ?? null : null, pl.body]);
+      const B = bot.toUpperCase(), url = this.env["WAKE_URL_" + B], key = this.env["WAKE_KEY_" + B];
+      if (this.env.WAKE_ENABLED === "1" && url) {   // gated OFF: WAKE_ENABLED is not set
+        this.state.waitUntil(fetch(url, { method: "POST", body: pl.body, headers: { "Content-Type": "application/json", "X-Event-Id": pl.event_id, ...(key ? { Authorization: "Bearer " + key } : {}) } })
+          .then(x => console.log("wake POST", bot, x.status)).catch(e => console.warn("wake POST failed", bot, e && e.name)));
+      }
+    }
+    return rows;
+  }
+  /** Cron stale check: DO status last_et older than 3 min during the session -> "stale" (debounced 15 min), "recovered" logged on next live tick. */
+  async staleCheck() {
+    const now = Date.now(), p = etParts(now);
+    if (!inSession(p) || p.secs < SESSION_START + 300) return { ok: true, skip: true };
+    const m = (await this.state.storage.get("meta")) || {}, age = m.last_et ? Math.round((now - Date.parse(m.last_et)) / 1000) : null;
+    if (age !== null && age <= 180) return { ok: true, age_s: age };
+    let st = this.wakeSt || (await this.state.storage.get("wake"));
+    if (!st || st.day !== p.date) return { ok: true, age_s: age, nostate: true };
+    const r = wakeRoute(st, [{ kind: "stale", age_s: age }], now, null, false);
+    st.stale = true; this.wakeSt = st; await this.state.storage.put("wake", st);
+    const rows = this.wakeEmit(r.perBot, null, null, now, p);
+    if (rows.length) await H.snapWrite(this.env, rows, false);
+    return { ok: true, age_s: age, stale: true, logged: rows.length };
+  }
+  async snap(b, body, test, extra = []) {
     const p = etParts(Date.now()), g = typeof b.green_count === "number" ? b.green_count : null;
     const st = this.snapSt = this.snapSt || (await this.state.storage.get("snap")) || { min: null, g: null, purged: null };
     const date = (test ? "test-" : "") + p.date, inRth = test || (tradingDay(p.date) && p.secs >= SESSION_START && p.secs <= 57659);
@@ -490,6 +530,7 @@ export class GexFeed {
     let ev = null;
     if (g !== null) { if ((st.g === null || st.g < 3) && g >= 3) ev = "green3"; if (g === 5 && st.g !== 5) ev = ev ? "green3+5" : "green5"; }
     if (test) ev = "test";
+    for (const x of extra) stmts.push(x);
     if (ev && inRth) stmts.push(["INSERT OR IGNORE INTO board_snap_evt (date, ts, kind, green, body) VALUES (?, ?, ?, ?, ?)", date, ts, ev, g, body]);
     const purge = !test && inRth && st.purged !== p.date;
     const dirty = !test && (st.g !== g || (inRth && st.min !== key) || purge);
@@ -522,6 +563,7 @@ export class GexFeed {
       if (!a) { const now = Date.now(); await this.state.storage.setAlarm(inSession(etParts(now), cfg.start) ? now + 1000 : nextSessionStart(now, cfg.start)); }
       const b = await this.state.storage.getAlarm(); return J({ ok: true, rearmed: !a, alarm: new Date(b).toISOString() });
     }
+    if (u.pathname === "/stalecheck" && !cfg.live) { try { return J(await this.staleCheck()); } catch (e) { return J({ ok: false, error: String(e && e.message).slice(0, 200) }, 500); } }
     if (u.pathname === "/snaptest" && !cfg.live) {
       try { const { board } = await this.cycle({ manual: true, snapTest: true }); return J({ ok: true, green: board.green_count }); }
       catch (e) { return J({ ok: false, error: String(e && e.message).slice(0, 200) }, 502); }
