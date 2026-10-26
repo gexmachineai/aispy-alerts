@@ -500,7 +500,7 @@ async function boardEnsure(env) {
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_history (ts TEXT PRIMARY KEY, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_sym_latest (sym TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, body TEXT NOT NULL)"),
-    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_qqq_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
+    ...["qqq", "tsla", "nvda", "meta"].map(x => env.DB.prepare(`CREATE TABLE IF NOT EXISTS board_${x}_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)`)),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS board_shadow_hist15 (bucket TEXT PRIMARY KEY, ts TEXT NOT NULL, received_at TEXT NOT NULL, summary TEXT NOT NULL, body TEXT NOT NULL)"),
   ]);
 }
@@ -556,7 +556,7 @@ async function boardStoreLive(env, data) {
 }
 GEX_H.storeLive = boardStoreLive;
 // Non-SPY live boards (QQQ): D1 board_sym_latest row keyed by symbol + board_<sym>_hist15. Never touches board_latest/board_hist15.
-const SYM_TABLES = { QQQ: "board_qqq_hist15" };
+const SYM_TABLES = { QQQ: "board_qqq_hist15", TSLA: "board_tsla_hist15", NVDA: "board_nvda_hist15", META: "board_meta_hist15" };
 async function boardStoreSym(env, sym, data, body) {
   const table = SYM_TABLES[sym]; if (!table) throw new Error("unknown symbol " + sym);
   const now = new Date().toISOString(), ts = typeof data.generated_et === "string" ? data.generated_et : now;
@@ -572,7 +572,7 @@ GEX_H.storeSym = boardStoreSym;
 // SPY snapshots (written from the GexFeed DO tick). Retention: SNAP_KEEP_DAYS, purged once per trading day.
 const SNAP_KEEP_DAYS = 90;
 // SPY uses board_snap_min/board_snap_evt (unchanged); other symbols use board_snap_min_<sym>/board_snap_evt_<sym>.
-const SNAP_SYMS = { SPY: "", QQQ: "_qqq" };
+const SNAP_SYMS = { SPY: "", QQQ: "_qqq", TSLA: "_tsla", NVDA: "_nvda", META: "_meta" };
 const snapInit = {};
 async function snapTables(env, sym = "SPY") {
   const T = SNAP_SYMS[sym]; if (T === undefined) throw new Error("unknown snap sym");
@@ -646,7 +646,7 @@ async function cachedRead(ctx, key, ttlS, produce) {
 }
 const BOARD_TTL_S = 3;   // viewers poll every 4 s; the feed writes every 5 s
 function gexStub(env) { return env.GEX_FEED.get(env.GEX_FEED.idFromName("spy")); }   // SPY keeps its original instance name/state
-const SYM_FEEDS = new Set(["QQQ"]);
+const SYM_FEEDS = new Set(["QQQ", "TSLA", "NVDA", "META"]);
 function symStub(env, sym) {   // one DO instance per extra symbol; the header tells a fresh instance which symbol it is
   const st = env.GEX_FEED.get(env.GEX_FEED.idFromName(sym));
   return { fetch: (u, init = {}) => st.fetch(u, { ...init, headers: { ...(init.headers || {}), "x-gex-sym": sym } }) };

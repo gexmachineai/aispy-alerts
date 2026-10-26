@@ -16,6 +16,11 @@ export const SYMS = {
   // QQQ trades ~0.9x SPY with $1 0DTE strikes near the money, so the same absolute +/-$15 window (~31 strikes) fits.
   // QQQ runs 07:30-16:00 (premarket spot like SPY) for minute snapshots; its live board/D1 storage still updates only from 09:30.
   QQQ: { sym: "QQQ", interval: 10000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: true, greenFlag: false, snap: true },
+  // Single-name 0DTE boards: RTH only, 15 s, and only on days whose first Tradier expiration == today (gate0dte; in practice Mon/Wed/Fri).
+  // On other days no alarm fires at all: the DO sleeps until the next listed expiration date's 09:30.
+  TSLA: { sym: "TSLA", interval: 15000, start: 9 * 3600 + 30 * 60, premarket: false, win: 25, live: true, greenFlag: false, snap: true, gate0dte: true },
+  NVDA: { sym: "NVDA", interval: 15000, start: 9 * 3600 + 30 * 60, premarket: false, win: 15, live: true, greenFlag: false, snap: true, gate0dte: true },
+  META: { sym: "META", interval: 15000, start: 9 * 3600 + 30 * 60, premarket: false, win: 30, live: true, greenFlag: false, snap: true, gate0dte: true },
 };
 
 // NYSE full-day closures (same list as schwab_feed.py). Early closes not modelled.
@@ -542,14 +547,48 @@ export class GexFeed {
     if (!stmts.length && !purge) return put;
     return Promise.all([H.snapWrite(this.env, stmts, purge, sym), put]);
   }
+  /** 0DTE gate: Tradier expiration dates (cached in DO storage, refreshed at most once per ET day). */
+  async exps(today) {
+    const c = await this.state.storage.get("exps");
+    if (c && c.day === today && Array.isArray(c.dates)) return c.dates;
+    let d = ((await this.source().get("/markets/options/expirations", { symbol: this.cfg.sym, includeAllRoots: "true" })).expirations || {}).date || [];
+    d = (typeof d === "string" ? [d] : d).filter(x => x >= today).sort().slice(0, 30);
+    await this.state.storage.put("exps", { day: today, dates: d });
+    return d;
+  }
+  /** Next session start on a trading day that is also an expiration date (falls back to the plain next session). */
+  async nextGated(now, cfg) {
+    const p = etParts(now);
+    try {
+      const d = await this.exps(p.date);
+      for (const x of d) { if (!tradingDay(x)) continue; const t = etEpoch(x, Math.floor(cfg.start / 3600), Math.floor(cfg.start / 60) % 60); if (t > now) return t; }
+    } catch (e) { console.warn("gate exps", cfg.sym, e && e.message); }
+    return nextSessionStart(now, cfg.start);
+  }
+  /** true if today has a 0DTE (first expiration >= today is today). Cached per day in storage "gate". */
+  async gateOk(p) {
+    const g = await this.state.storage.get("gate");
+    if (g && g.date === p.date) return g.ok;
+    const d = await this.exps(p.date), ok = d[0] === p.date;
+    await this.state.storage.put("gate", { date: p.date, ok, first: d[0] || null });
+    console.log(JSON.stringify({ gexfeed: "gate", sym: this.cfg.sym, date: p.date, ok, first: d[0] || null }));
+    return ok;
+  }
   async alarm() {
     const now = Date.now(), p = etParts(now), cfg = await this.conf(), iv = cfg.interval;
-    if (!inSession(p, cfg.start)) { await this.state.storage.setAlarm(nextSessionStart(now, cfg.start)); return; }
+    if (!inSession(p, cfg.start)) { await this.state.storage.setAlarm(cfg.gate0dte ? await this.nextGated(now, cfg) : nextSessionStart(now, cfg.start)); return; }
+    if (cfg.gate0dte) {
+      let ok;
+      try { ok = await this.gateOk(p); } catch (e) { console.warn("gate", cfg.sym, e && e.message); await this.state.storage.setAlarm(now + 60e3); return; }
+      if (!ok) { await this.state.storage.setAlarm(await this.nextGated(etEpoch(p.date, 16, 0), cfg)); return; }
+    }
     let next = now + iv;
     try { await this.cycle(); this.fails = 0; next = Math.max(Date.now() + 250, now + iv); }
     catch (e) {
       this.fails += 1; const back = Math.min(30, 5 * 2 ** Math.min(this.fails, 6)) * 1000; next = Date.now() + back;
       if (e instanceof AuthError) next = Date.now() + 300e3;
+      // Single-name boards yield first: much longer backoff (30 s doubling to 5 min; 429 -> 5 min) so SPY/QQQ keep the shared Tradier budget.
+      if (cfg.gate0dte) next = Date.now() + (/429/.test(String(e && e.message)) ? 300e3 : Math.min(300, 30 * 2 ** Math.min(this.fails - 1, 4)) * 1000);
       console.error(JSON.stringify({ gexfeed: "cycle_error", sym: cfg.sym, fails: this.fails, err: String(e && e.message).slice(0, 200) }));
       try { const m = (await this.state.storage.get("meta")) || {}; m.last_error = { at: new Date().toISOString(), msg: String(e && e.message).slice(0, 200) }; await this.state.storage.put("meta", m); } catch {}
     }
@@ -560,9 +599,16 @@ export class GexFeed {
     const cfg = await this.conf(request);
     const J = (o, s = 200) => new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json; charset=utf-8" } });
     if (u.pathname === "/latest") { const b = await this.state.storage.get(cfg.live ? "board_latest" : "board_shadow_latest"); return b ? new Response(b, { headers: { "Content-Type": "application/json; charset=utf-8" } }) : J({ ok: false, error: cfg.live ? `No ${cfg.sym} data yet` : "No shadow board yet" }, 404); }
-    if (u.pathname === "/status") { const a = await this.state.storage.getAlarm(); return J({ ok: true, sym: cfg.sym, mode: cfg.live ? "live" : this.mode(), alarm: a ? new Date(a).toISOString() : null, meta: (await this.state.storage.get("meta")) || null }); }
+    if (u.pathname === "/status") { const a = await this.state.storage.getAlarm(); return J({ ok: true, sym: cfg.sym, mode: cfg.live ? "live" : this.mode(), alarm: a ? new Date(a).toISOString() : null, ...(cfg.gate0dte ? { gate: (await this.state.storage.get("gate")) || null } : {}), meta: (await this.state.storage.get("meta")) || null }); }
     if (u.pathname === "/ensure") {
       const a = await this.state.storage.getAlarm();
+      if (cfg.gate0dte) {   // gated symbols: an existing alarm is always trusted (it may deliberately skip non-0DTE days)
+        if (!a) { const now = Date.now(), p = etParts(now); let ok = null;
+          if (inSession(p, cfg.start)) { const g = await this.state.storage.get("gate"); ok = g && g.date === p.date ? g.ok : null; }
+          await this.state.storage.setAlarm(inSession(p, cfg.start) && ok !== false ? now + 1000 : await this.nextGated(inSession(p, cfg.start) ? etEpoch(p.date, 16, 0) : now, cfg)); }
+        const b = await this.state.storage.getAlarm(), g = await this.state.storage.get("gate");
+        return J({ ok: true, rearmed: !a, alarm: new Date(b).toISOString(), gate: g || null });
+      }
       const sNext = nextSessionStart(Date.now(), cfg.start);
       if (a && !inSession(etParts(Date.now()), cfg.start) && a > sNext) { await this.state.storage.setAlarm(sNext); }   // start moved earlier (QQQ 09:30 -> 07:30)
       if (!a) { const now = Date.now(); await this.state.storage.setAlarm(inSession(etParts(now), cfg.start) ? now + 1000 : nextSessionStart(now, cfg.start)); }
