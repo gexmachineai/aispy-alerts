@@ -571,47 +571,52 @@ async function boardStoreSym(env, sym, data, body) {
 GEX_H.storeSym = boardStoreSym;
 // SPY snapshots (written from the GexFeed DO tick). Retention: SNAP_KEEP_DAYS, purged once per trading day.
 const SNAP_KEEP_DAYS = 90;
-let snapInit = false;
-async function snapTables(env) {
-  if (snapInit) return; await env.DB.batch([
-    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_snap_min (date TEXT NOT NULL, hm TEXT NOT NULL, ts TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (date, hm))"),
-    env.DB.prepare("CREATE TABLE IF NOT EXISTS board_snap_evt (date TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (ts, kind))"),
-    env.DB.prepare("CREATE INDEX IF NOT EXISTS board_snap_evt_date ON board_snap_evt (date)"),
-  ]); snapInit = true;
+// SPY uses board_snap_min/board_snap_evt (unchanged); other symbols use board_snap_min_<sym>/board_snap_evt_<sym>.
+const SNAP_SYMS = { SPY: "", QQQ: "_qqq" };
+const snapInit = {};
+async function snapTables(env, sym = "SPY") {
+  const T = SNAP_SYMS[sym]; if (T === undefined) throw new Error("unknown snap sym");
+  if (snapInit[sym]) return; await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS board_snap_min${T} (date TEXT NOT NULL, hm TEXT NOT NULL, ts TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (date, hm))`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS board_snap_evt${T} (date TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (ts, kind))`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS board_snap_evt${T}_date ON board_snap_evt${T} (date)`),
+  ]); snapInit[sym] = true;
 }
-GEX_H.snapWrite = async (env, rows, purge) => {
-  await snapTables(env);
+GEX_H.snapWrite = async (env, rows, purge, sym = "SPY") => {
+  await snapTables(env, sym); const T = SNAP_SYMS[sym];
   const stmts = rows.map(([sql, ...a]) => env.DB.prepare(sql).bind(...a));
   if (purge) { const cut = new Date(Date.now() - SNAP_KEEP_DAYS * 864e5).toISOString().slice(0, 10);
-    stmts.push(env.DB.prepare("DELETE FROM board_snap_min WHERE date < ? AND date NOT LIKE 'test-%'").bind(cut), env.DB.prepare("DELETE FROM board_snap_evt WHERE date < ? AND date NOT LIKE 'test-%'").bind(cut)); }
+    stmts.push(env.DB.prepare(`DELETE FROM board_snap_min${T} WHERE date < ? AND date NOT LIKE 'test-%'`).bind(cut), env.DB.prepare(`DELETE FROM board_snap_evt${T} WHERE date < ? AND date NOT LIKE 'test-%'`).bind(cut)); }
   if (stmts.length) await env.DB.batch(stmts);
 };
 async function snapRead(env, url, rest) {
-  await snapTables(env);
   const q = k => url.searchParams.get(k), J = (o, s = 200) => privResp(JSON.stringify(o), s, "application/json; charset=utf-8");
+  const sym = (q("sym") || "SPY").toUpperCase(), T = SNAP_SYMS[sym];
+  if (T === undefined) return J({ ok: false, error: "sym must be one of " + Object.keys(SNAP_SYMS).join(",") }, 400);
+  await snapTables(env, sym);
   const date = q("date"), okD = d => /^(test-)?\d{4}-\d{2}-\d{2}$/.test(d || "");
   if (rest === "/snaps" || rest === "/snaps/dates") {
-    const { results } = await env.DB.prepare("SELECT date, COUNT(*) n, MIN(hm) first, MAX(hm) last FROM board_snap_min GROUP BY date ORDER BY date DESC").all();
-    const ev = (await env.DB.prepare("SELECT date, COUNT(*) n FROM board_snap_evt GROUP BY date").all()).results;
+    const { results } = await env.DB.prepare(`SELECT date, COUNT(*) n, MIN(hm) first, MAX(hm) last FROM board_snap_min${T} GROUP BY date ORDER BY date DESC`).all();
+    const ev = (await env.DB.prepare(`SELECT date, COUNT(*) n FROM board_snap_evt${T} GROUP BY date`).all()).results;
     const em = Object.fromEntries(ev.map(r => [r.date, r.n]));
-    return J({ ok: true, dates: results.map(r => ({ ...r, events: em[r.date] || 0 })), extra_event_dates: ev.filter(r => !results.some(x => x.date === r.date)) });
+    return J({ ok: true, sym, dates: results.map(r => ({ ...r, events: em[r.date] || 0 })), extra_event_dates: ev.filter(r => !results.some(x => x.date === r.date)) });
   }
   if (rest === "/snaps/min") {
     if (!okD(date)) return J({ ok: false, error: "date=YYYY-MM-DD required" }, 400);
     const t = q("t");
-    if (!t) { const { results } = await env.DB.prepare("SELECT hm, ts, green FROM board_snap_min WHERE date = ? ORDER BY hm").bind(date).all(); return J({ ok: true, date, minutes: results }); }
+    if (!t) { const { results } = await env.DB.prepare(`SELECT hm, ts, green FROM board_snap_min${T} WHERE date = ? ORDER BY hm`).bind(date).all(); return J({ ok: true, sym, date, minutes: results }); }
     if (!/^\d{2}:\d{2}$/.test(t)) return J({ ok: false, error: "t=HH:MM" }, 400);
-    const r = await env.DB.prepare("SELECT body FROM board_snap_min WHERE date = ? AND hm = ?").bind(date, t).first();
+    const r = await env.DB.prepare(`SELECT body FROM board_snap_min${T} WHERE date = ? AND hm = ?`).bind(date, t).first();
     return r ? privResp(r.body, 200, "application/json; charset=utf-8") : J({ ok: false, error: "no snapshot" }, 404);
   }
   if (rest === "/snaps/events") {
     const ts = q("ts");
-    if (ts) { const r = await env.DB.prepare("SELECT body FROM board_snap_evt WHERE ts = ? AND kind LIKE ? ORDER BY kind LIMIT 1").bind(ts, (q("kind") || "").replace(/[%_]/g, "") + "%").first();
+    if (ts) { const r = await env.DB.prepare(`SELECT body FROM board_snap_evt${T} WHERE ts = ? AND kind LIKE ? ORDER BY kind LIMIT 1`).bind(ts, (q("kind") || "").replace(/[%_]/g, "") + "%").first();
       return r ? privResp(r.body, 200, "application/json; charset=utf-8") : J({ ok: false, error: "no event" }, 404); }
     const kp = (q("kind") || "").replace(/[%_]/g, "") + "%", full = q("body") === "1" ? ", body" : "";
-    const { results } = okD(date) ? await env.DB.prepare(`SELECT date, ts, kind, green${full} FROM board_snap_evt WHERE date = ? AND kind LIKE ? ORDER BY ts LIMIT 2000`).bind(date, kp).all()
-      : await env.DB.prepare(`SELECT date, ts, kind, green${full} FROM board_snap_evt WHERE kind LIKE ? ORDER BY ts DESC LIMIT 200`).bind(kp).all();
-    return J({ ok: true, events: results });
+    const { results } = okD(date) ? await env.DB.prepare(`SELECT date, ts, kind, green${full} FROM board_snap_evt${T} WHERE date = ? AND kind LIKE ? ORDER BY ts LIMIT 2000`).bind(date, kp).all()
+      : await env.DB.prepare(`SELECT date, ts, kind, green${full} FROM board_snap_evt${T} WHERE kind LIKE ? ORDER BY ts DESC LIMIT 200`).bind(kp).all();
+    return J({ ok: true, sym, events: results });
   }
   return null;
 }

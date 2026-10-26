@@ -14,7 +14,8 @@ export const INTERVAL_MS = 5000;
 export const SYMS = {
   SPY: { sym: "SPY", interval: 5000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: false, greenFlag: true },
   // QQQ trades ~0.9x SPY with $1 0DTE strikes near the money, so the same absolute +/-$15 window (~31 strikes) fits.
-  QQQ: { sym: "QQQ", interval: 10000, start: 9 * 3600 + 30 * 60, premarket: false, win: 15, live: true, greenFlag: false },
+  // QQQ runs 07:30-16:00 (premarket spot like SPY) for minute snapshots; its live board/D1 storage still updates only from 09:30.
+  QQQ: { sym: "QQQ", interval: 10000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: true, greenFlag: false, snap: true },
 };
 
 // NYSE full-day closures (same list as schwab_feed.py). Early closes not modelled.
@@ -450,7 +451,8 @@ export class GexFeed {
     if (cfg.live) {
       // QQQ etc.: straight to its own live storage (DO "board_latest" + D1 board_sym_latest/board_<sym>_hist15). Never SPY tables.
       // Manual runs only return the board unless opts.store (so an off-hours test doesn't replace the last session board).
-      if (!manual || opts.store) { await this.state.storage.put("board_latest", body); await H.storeSym(this.env, cfg.sym, b, body); }
+      if ((!manual || opts.store) && !pmLive) { await this.state.storage.put("board_latest", body); await H.storeSym(this.env, cfg.sym, b, body); }
+      if (!manual && cfg.snap) { try { const sp = await this.snap(b, body, false, [], cfg.sym); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
     } else {
     const prev = await this.state.storage.get("board_shadow_latest");
     await this.state.storage.put("board_shadow_latest", body);
@@ -521,23 +523,24 @@ export class GexFeed {
     if (rows.length) await H.snapWrite(this.env, rows, false);
     return { ok: true, age_s: age, stale: true, logged: rows.length };
   }
-  async snap(b, body, test, extra = []) {
+  async snap(b, body, test, extra = [], sym = "SPY") {
+    const T = sym === "SPY" ? "" : "_" + sym.toLowerCase();
     const p = etParts(Date.now()), g = typeof b.green_count === "number" ? b.green_count : null;
     const st = this.snapSt = this.snapSt || (await this.state.storage.get("snap")) || { min: null, g: null, purged: null };
     const date = (test ? "test-" : "") + p.date, inRth = test || (tradingDay(p.date) && p.secs >= SESSION_START && p.secs <= 57659);
     const stmts = [], ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`, key = date + " " + p.hm;
-    if (inRth && st.min !== key) stmts.push(["INSERT OR IGNORE INTO board_snap_min (date, hm, ts, green, body) VALUES (?, ?, ?, ?, ?)", date, p.hm, ts, g, body]);
+    if (inRth && st.min !== key) stmts.push([`INSERT OR IGNORE INTO board_snap_min${T} (date, hm, ts, green, body) VALUES (?, ?, ?, ?, ?)`, date, p.hm, ts, g, body]);
     let ev = null;
     if (g !== null) { if ((st.g === null || st.g < 3) && g >= 3) ev = "green3"; if (g === 5 && st.g !== 5) ev = ev ? "green3+5" : "green5"; }
     if (test) ev = "test";
     for (const x of extra) stmts.push(x);
-    if (ev && inRth) stmts.push(["INSERT OR IGNORE INTO board_snap_evt (date, ts, kind, green, body) VALUES (?, ?, ?, ?, ?)", date, ts, ev, g, body]);
+    if (ev && inRth) stmts.push([`INSERT OR IGNORE INTO board_snap_evt${T} (date, ts, kind, green, body) VALUES (?, ?, ?, ?, ?)`, date, ts, ev, g, body]);
     const purge = !test && inRth && st.purged !== p.date;
     const dirty = !test && (st.g !== g || (inRth && st.min !== key) || purge);
     if (!test) { st.min = inRth ? key : st.min; st.g = g; if (purge) st.purged = p.date; }
     const put = dirty ? this.state.storage.put("snap", st) : null;
     if (!stmts.length && !purge) return put;
-    return Promise.all([H.snapWrite(this.env, stmts, purge), put]);
+    return Promise.all([H.snapWrite(this.env, stmts, purge, sym), put]);
   }
   async alarm() {
     const now = Date.now(), p = etParts(now), cfg = await this.conf(), iv = cfg.interval;
@@ -560,6 +563,8 @@ export class GexFeed {
     if (u.pathname === "/status") { const a = await this.state.storage.getAlarm(); return J({ ok: true, sym: cfg.sym, mode: cfg.live ? "live" : this.mode(), alarm: a ? new Date(a).toISOString() : null, meta: (await this.state.storage.get("meta")) || null }); }
     if (u.pathname === "/ensure") {
       const a = await this.state.storage.getAlarm();
+      const sNext = nextSessionStart(Date.now(), cfg.start);
+      if (a && !inSession(etParts(Date.now()), cfg.start) && a > sNext) { await this.state.storage.setAlarm(sNext); }   // start moved earlier (QQQ 09:30 -> 07:30)
       if (!a) { const now = Date.now(); await this.state.storage.setAlarm(inSession(etParts(now), cfg.start) ? now + 1000 : nextSessionStart(now, cfg.start)); }
       const b = await this.state.storage.getAlarm(); return J({ ok: true, rearmed: !a, alarm: new Date(b).toISOString() });
     }
