@@ -16,11 +16,11 @@ export const SYMS = {
   // QQQ trades ~0.9x SPY with $1 0DTE strikes near the money, so the same absolute +/-$15 window (~31 strikes) fits.
   // QQQ runs 07:30-16:00 (premarket spot like SPY) for minute snapshots; its live board/D1 storage still updates only from 09:30.
   QQQ: { sym: "QQQ", interval: 10000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: true, greenFlag: false, snap: true },
-  // Single-name 0DTE boards: RTH only, 15 s, and only on days whose first Tradier expiration == today (gate0dte; in practice Mon/Wed/Fri).
-  // On other days no alarm fires at all: the DO sleeps until the next listed expiration date's 09:30.
-  TSLA: { sym: "TSLA", interval: 15000, start: 9 * 3600 + 30 * 60, premarket: false, win: 25, live: true, greenFlag: false, snap: true, gate0dte: true },
-  NVDA: { sym: "NVDA", interval: 15000, start: 9 * 3600 + 30 * 60, premarket: false, win: 15, live: true, greenFlag: false, snap: true, gate0dte: true },
-  META: { sym: "META", interval: 15000, start: 9 * 3600 + 30 * 60, premarket: false, win: 30, live: true, greenFlag: false, snap: true, gate0dte: true },
+  // Single-name 0DTE boards: 07:30-16:00 ET (premarket spot like SPY/QQQ), 15 s, and only on days whose first Tradier expiration == today (gate0dte; in practice Mon/Wed/Fri).
+  // On other days no alarm fires at all: the DO sleeps until the next listed expiration date's 07:30.
+  TSLA: { sym: "TSLA", interval: 15000, start: 7 * 3600 + 30 * 60, premarket: true, win: 25, live: true, greenFlag: false, snap: true, gate0dte: true },
+  NVDA: { sym: "NVDA", interval: 15000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: true, greenFlag: false, snap: true, gate0dte: true },
+  META: { sym: "META", interval: 15000, start: 7 * 3600 + 30 * 60, premarket: true, win: 30, live: true, greenFlag: false, snap: true, gate0dte: true },
 };
 
 // NYSE full-day closures (same list as schwab_feed.py). Early closes not modelled.
@@ -606,6 +606,7 @@ export class GexFeed {
         if (!a) { const now = Date.now(), p = etParts(now); let ok = null;
           if (inSession(p, cfg.start)) { const g = await this.state.storage.get("gate"); ok = g && g.date === p.date ? g.ok : null; }
           await this.state.storage.setAlarm(inSession(p, cfg.start) && ok !== false ? now + 1000 : await this.nextGated(inSession(p, cfg.start) ? etEpoch(p.date, 16, 0) : now, cfg)); }
+        else { const now = Date.now(); if (!inSession(etParts(now), cfg.start)) { const ng = await this.nextGated(now, cfg); if (a > ng) await this.state.storage.setAlarm(ng); } }   // start moved earlier (09:30 -> 07:30)
         const b = await this.state.storage.getAlarm(), g = await this.state.storage.get("gate");
         return J({ ok: true, rearmed: !a, alarm: new Date(b).toISOString(), gate: g || null });
       }
