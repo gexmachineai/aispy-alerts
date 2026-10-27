@@ -825,6 +825,7 @@ export default {
     if (!env.GEX_FEED) return;
     ctx.waitUntil(gexStub(env).fetch("https://gex/stalecheck").then(r => r.text()).then(t => console.log("gexfeed stalecheck", t)).catch(e => console.error("stalecheck failed", String(e))));
     ctx.waitUntil(gexStub(env).fetch("https://gex/ensure").then(r => r.text()).then(t => console.log("gexfeed ensure", t)).catch(e => console.error("gexfeed ensure failed", String(e))));
+    for (const s of SYM_FEEDS) ctx.waitUntil(symStub(env, s).fetch("https://gex/stalecheck").then(r => r.text()).then(t => console.log("gexfeed stalecheck " + s, t)).catch(e => console.error("stalecheck failed " + s, String(e))));
     for (const s of SYM_FEEDS) ctx.waitUntil(symStub(env, s).fetch("https://gex/ensure").then(r => r.text()).then(t => console.log("gexfeed ensure " + s, t)).catch(e => console.error("gexfeed ensure failed " + s, String(e))));
   },
 };

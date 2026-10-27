@@ -457,7 +457,9 @@ export class GexFeed {
       // QQQ etc.: straight to its own live storage (DO "board_latest" + D1 board_sym_latest/board_<sym>_hist15). Never SPY tables.
       // Manual runs only return the board unless opts.store (so an off-hours test doesn't replace the last session board).
       if ((!manual || opts.store) && !pmLive) { await this.state.storage.put("board_latest", body); await H.storeSym(this.env, cfg.sym, b, body); }
-      if (!manual && cfg.snap) { try { const sp = await this.snap(b, body, false, [], cfg.sym); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
+      let lw = [];
+      if (!manual && cfg.snap) { try { lw = await this.wake(b, f.vol, tasks, cfg.sym); } catch (e) { console.warn("wake", cfg.sym, e && e.message); } }
+      if (!manual && cfg.snap) { try { const sp = await this.snap(b, body, false, lw, cfg.sym); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
     } else {
     const prev = await this.state.storage.get("board_shadow_latest");
     await this.state.storage.put("board_shadow_latest", body);
@@ -492,20 +494,20 @@ export class GexFeed {
   }
   /** SPY board snapshots -> D1: one per ET minute 07:30-16:00 (feed session) (board_snap_min) + green_count events (board_snap_evt). test=true writes date "test-YYYY-MM-DD", no state change. */
   /** Wake triggers (SHADOW). Returns board_snap_evt rows for the snap batch; POSTs only if WAKE_ENABLED==="1" AND per-bot URL secret. */
-  async wake(b, vol, tasks) {
+  async wake(b, vol, tasks, sym = "SPY") {
     const now = Date.now(), p = etParts(now);
     if (!inSession(p)) return [];
     const st0 = this.wakeSt = this.wakeSt || (await this.state.storage.get("wake")) || null;
-    const r = wakeEval(st0, b, vol, now, p.date + " " + p.hm, { offRule: this.env.WAKE_OFF_RULE || "v2" });
+    const r = wakeEval(st0, b, vol, now, p.date + " " + p.hm, sym === "SPY" ? { offRule: this.env.WAKE_OFF_RULE || "v2" } : { offRule: this.env.WAKE_OFF_RULE || "v2", sym });
     this.wakeSt = r.st;
     if (r.dirty) tasks.push(this.state.storage.put("wake", r.st));
-    return this.wakeEmit(r.perBot, b, r.volInfo, now, p);
+    return this.wakeEmit(r.perBot, b, r.volInfo, now, p, sym);
   }
-  wakeEmit(perBot, b, volInfo, now, p) {
-    const rows = [], ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`;
+  wakeEmit(perBot, b, volInfo, now, p, sym = "SPY") {
+    const rows = [], ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`, T = sym === "SPY" ? "" : "_" + sym.toLowerCase();
     for (const bot in perBot) {
-      const pl = wakePayload(bot, perBot[bot], b, volInfo, now, "https://aispyalerts.com/");
-      rows.push(["INSERT OR IGNORE INTO board_snap_evt (date, ts, kind, green, body) VALUES (?, ?, ?, ?, ?)", p.date, ts, `wake:${bot}:${pl.kinds}`, b ? b.green_count ?? null : null, pl.body]);
+      const pl = wakePayload(bot, perBot[bot], b, volInfo, now, "https://aispyalerts.com/", sym);
+      rows.push([`INSERT OR IGNORE INTO board_snap_evt${T} (date, ts, kind, green, body) VALUES (?, ?, ?, ?, ?)`, p.date, ts, `wake:${bot}:${pl.kinds}`, b ? b.green_count ?? null : null, pl.body]);
       const B = bot.toUpperCase(), url = this.env["WAKE_URL_" + B], key = this.env["WAKE_KEY_" + B];
       if (this.env.WAKE_ENABLED === "1" && url) {   // gated OFF: WAKE_ENABLED is not set
         this.state.waitUntil(fetch(url, { method: "POST", body: pl.body, headers: { "Content-Type": "application/json", "X-Event-Id": pl.event_id, ...(key ? { Authorization: "Bearer " + key } : {}) } })
@@ -521,10 +523,11 @@ export class GexFeed {
     const m = (await this.state.storage.get("meta")) || {}, age = m.last_et ? Math.round((now - Date.parse(m.last_et)) / 1000) : null;
     if (age !== null && age <= 180) return { ok: true, age_s: age };
     let st = this.wakeSt || (await this.state.storage.get("wake"));
-    if (!st || st.day !== p.date) return { ok: true, age_s: age, nostate: true };
-    const r = wakeRoute(st, [{ kind: "stale", age_s: age }], now, null, false);
+    if (!st || st.day !== p.date) return { ok: true, age_s: age, nostate: true };   // gated singles: no state on non-0DTE days
+    const sym = (this.cfg && this.cfg.sym) || "SPY";
+    const r = wakeRoute(st, [{ kind: "stale", age_s: age }], now, null, false, sym);
     st.stale = true; this.wakeSt = st; await this.state.storage.put("wake", st);
-    const rows = this.wakeEmit(r.perBot, null, null, now, p);
+    const rows = this.wakeEmit(r.perBot, null, null, now, p, sym);
     if (rows.length) await H.snapWrite(this.env, rows, false);
     return { ok: true, age_s: age, stale: true, logged: rows.length };
   }
@@ -615,7 +618,7 @@ export class GexFeed {
       if (!a) { const now = Date.now(); await this.state.storage.setAlarm(inSession(etParts(now), cfg.start) ? now + 1000 : nextSessionStart(now, cfg.start)); }
       const b = await this.state.storage.getAlarm(); return J({ ok: true, rearmed: !a, alarm: new Date(b).toISOString() });
     }
-    if (u.pathname === "/stalecheck" && !cfg.live) { try { return J(await this.staleCheck()); } catch (e) { return J({ ok: false, error: String(e && e.message).slice(0, 200) }, 500); } }
+    if (u.pathname === "/stalecheck" && (!cfg.live || cfg.snap)) { try { return J(await this.staleCheck()); } catch (e) { return J({ ok: false, error: String(e && e.message).slice(0, 200) }, 500); } }
     if (u.pathname === "/snaptest" && !cfg.live) {
       try { const { board } = await this.cycle({ manual: true, snapTest: true }); return J({ ok: true, green: board.green_count }); }
       catch (e) { return J({ ok: false, error: String(e && e.message).slice(0, 200) }, 502); }
