@@ -582,7 +582,10 @@ async function snapTables(env, sym = "SPY") {
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS board_snap_min${T} (date TEXT NOT NULL, hm TEXT NOT NULL, ts TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (date, hm))`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS board_snap_evt${T} (date TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, green INTEGER, body TEXT NOT NULL, PRIMARY KEY (ts, kind))`),
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS board_snap_evt${T}_date ON board_snap_evt${T} (date)`),
-  ]); snapInit[sym] = true;
+  ]);
+  const cols = (await env.DB.prepare(`PRAGMA table_info(board_snap_min${T})`).all()).results || [];
+  if (!cols.some(c => c.name === "opts")) { try { await env.DB.prepare(`ALTER TABLE board_snap_min${T} ADD COLUMN opts TEXT`).run(); } catch (e) { if (!/duplicate column/i.test(String(e && e.message))) throw e; } }
+  snapInit[sym] = true;
 }
 GEX_H.snapWrite = async (env, rows, purge, sym = "SPY") => {
   await snapTables(env, sym); const T = SNAP_SYMS[sym];
@@ -610,6 +613,17 @@ async function snapRead(env, url, rest) {
     if (!/^\d{2}:\d{2}$/.test(t)) return J({ ok: false, error: "t=HH:MM" }, 400);
     const r = await env.DB.prepare(`SELECT body FROM board_snap_min${T} WHERE date = ? AND hm = ?`).bind(date, t).first();
     return r ? privResp(r.body, 200, "application/json; charset=utf-8") : J({ ok: false, error: "no snapshot" }, 404);
+  }
+  if (rest === "/snaps/opts") {
+    if (!okD(date)) return J({ ok: false, error: "date=YYYY-MM-DD required" }, 400);
+    const { results } = await env.DB.prepare(`SELECT hm, ts, opts FROM board_snap_min${T} WHERE date = ? AND opts IS NOT NULL ORDER BY hm`).bind(date).all();
+    const mins = results.map(r => { try { return { hm: r.hm, ts: r.ts, ...JSON.parse(r.opts) }; } catch { return null; } }).filter(Boolean);
+    if (q("format") === "csv") {
+      const lines = ["date,time,sym,spot,strike,side,bid,ask,mark,volume,open_interest"];
+      for (const m of mins) for (const x of m.rows || []) lines.push([date, m.hm, sym, m.spot, x[0], x[1] === "c" ? "call" : "put", x[2], x[3], x[4], x[5], x[6]].join(","));
+      return new Response(lines.join("\n") + "\n", { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="opts_${sym}_${date}.csv"`, "cache-control": "no-store", "x-robots-tag": "noindex" } });
+    }
+    return J({ ok: true, sym, date, n: mins.length, cols: ["strike", "side", "bid", "ask", "mark", "vol", "oi"], minutes: mins.map(({ cols, ...m }) => m) });
   }
   if (rest === "/snaps/events") {
     const ts = q("ts");

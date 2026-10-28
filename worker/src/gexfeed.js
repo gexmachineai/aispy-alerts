@@ -537,7 +537,15 @@ export class GexFeed {
     const st = this.snapSt = this.snapSt || (await this.state.storage.get("snap")) || { min: null, g: null, purged: null };
     const date = (test ? "test-" : "") + p.date, inRth = test || (tradingDay(p.date) && p.secs >= SESSION_START && p.secs <= 57659);
     const stmts = [], ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`, key = date + " " + p.hm;
-    if (inRth && st.min !== key) stmts.push([`INSERT OR IGNORE INTO board_snap_min${T} (date, hm, ts, green, body) VALUES (?, ?, ?, ?, ?)`, date, p.hm, ts, g, body]);
+    if (inRth && st.min !== key) {
+      // option prices +/-$5 of spot, RTH 09:30-16:00 only (premarket quotes stale); piggybacks on the minute row (0 extra row writes)
+      let opts = null;
+      if (test || p.secs >= RTH_START) { try { const sp = num(b.spot), o = [];
+        for (const r of (b.strikes || [])) { if (Math.abs(r.strike - sp) > 5) continue;
+          for (const sd of ["call", "put"]) { const c = r[sd] || {}; o.push([r.strike, sd[0], c.bid ?? 0, c.ask ?? 0, c.mark ?? 0, c.volume ?? 0, c.oi ?? 0]); } }
+        opts = JSON.stringify({ spot: sp, exp: b.expiration ?? null, cols: ["strike", "side", "bid", "ask", "mark", "vol", "oi"], rows: o }); } catch (e) { opts = null; } }
+      stmts.push([`INSERT OR IGNORE INTO board_snap_min${T} (date, hm, ts, green, body, opts) VALUES (?, ?, ?, ?, ?, ?)`, date, p.hm, ts, g, body, opts]);
+    }
     let ev = null;
     if (g !== null) { if ((st.g === null || st.g < 3) && g >= 3) ev = "green3"; if (g === 5 && st.g !== 5) ev = ev ? "green3+5" : "green5"; }
     if (test) ev = "test";
