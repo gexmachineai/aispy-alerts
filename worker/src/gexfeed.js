@@ -14,7 +14,7 @@ export const INTERVAL_MS = 5000;
 export const SYMS = {
   SPY: { sym: "SPY", interval: 5000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: false, greenFlag: true },
   // QQQ trades ~0.9x SPY with $1 0DTE strikes near the money, so the same absolute +/-$15 window (~31 strikes) fits.
-  // QQQ runs 07:30-16:00 (premarket spot like SPY) for minute snapshots; its live board/D1 storage still updates only from 09:30.
+  // QQQ runs 07:30-16:00 (premarket spot like SPY) for minute snapshots; its live board/D1 board_sym_latest also updates premarket (b.premarket=true); 15-min history slots stay 09:30..16:00.
   QQQ: { sym: "QQQ", interval: 10000, start: 7 * 3600 + 30 * 60, premarket: true, win: 15, live: true, greenFlag: false, snap: true },
   // Single-name 0DTE boards: 07:30-16:00 ET (premarket spot like SPY/QQQ), 15 s, and only on days whose first Tradier expiration == today (gate0dte; in practice Mon/Wed/Fri).
   // On other days no alarm fires at all: the DO sleeps until the next listed expiration date's 07:30.
@@ -456,7 +456,7 @@ export class GexFeed {
     if (cfg.live) {
       // QQQ etc.: straight to its own live storage (DO "board_latest" + D1 board_sym_latest/board_<sym>_hist15). Never SPY tables.
       // Manual runs only return the board unless opts.store (so an off-hours test doesn't replace the last session board).
-      if ((!manual || opts.store) && !pmLive) { await this.state.storage.put("board_latest", body); await H.storeSym(this.env, cfg.sym, b, body); }
+      if (!manual || opts.store) { await this.state.storage.put("board_latest", body); await H.storeSym(this.env, cfg.sym, b, body); }
       let lw = [];
       if (!manual && cfg.snap) { try { lw = await this.wake(b, f.vol, tasks, cfg.sym); } catch (e) { console.warn("wake", cfg.sym, e && e.message); } }
       if (!manual && cfg.snap) { try { const sp = await this.snap(b, body, false, lw, cfg.sym); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }

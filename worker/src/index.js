@@ -563,7 +563,9 @@ async function boardStoreSym(env, sym, data, body) {
   await boardInit(env);
   const prev = await env.DB.prepare("SELECT ts, body FROM board_sym_latest WHERE sym = ?").bind(sym).first();
   const stmts = [env.DB.prepare("INSERT INTO board_sym_latest (sym, ts, received_at, body) VALUES (?, ?, ?, ?) ON CONFLICT(sym) DO UPDATE SET ts = excluded.ts, received_at = excluded.received_at, body = excluded.body").bind(sym, ts, now, body)];
-  const slots = prev ? boardSlotStmts(env, prev.ts, prev.body, ts, body, now, table) : [];
+  // Premarket boards (07:30-09:30) update board_sym_latest only; never fill 15-min history slots.
+  const pmNew = data.premarket === true, pmPrev = !!(prev && typeof prev.body === "string" && prev.body.includes('"premarket":true'));
+  const slots = prev && !pmNew ? boardSlotStmts(env, prev.ts, pmPrev ? null : prev.body, ts, body, now, table) : [];
   if (slots.length) stmts.push(...slots, boardTrim(env, table));
   await env.DB.batch(stmts);
   return ts;
