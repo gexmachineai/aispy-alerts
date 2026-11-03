@@ -584,9 +584,38 @@ async function snapTables(env, sym = "SPY") {
     env.DB.prepare(`CREATE INDEX IF NOT EXISTS board_snap_evt${T}_date ON board_snap_evt${T} (date)`),
   ]);
   const cols = (await env.DB.prepare(`PRAGMA table_info(board_snap_min${T})`).all()).results || [];
-  if (!cols.some(c => c.name === "opts")) { try { await env.DB.prepare(`ALTER TABLE board_snap_min${T} ADD COLUMN opts TEXT`).run(); } catch (e) { if (!/duplicate column/i.test(String(e && e.message))) throw e; } }
+  if (!cols.some(c => c.name === "vol")) { try { await env.DB.prepare(`ALTER TABLE board_snap_min${T} ADD COLUMN vol INTEGER`).run(); } catch (e) { if (!/duplicate column/i.test(String(e && e.message))) throw e; } }
+  await trgTable(env);
+    if (!cols.some(c => c.name === "opts")) { try { await env.DB.prepare(`ALTER TABLE board_snap_min${T} ADD COLUMN opts TEXT`).run(); } catch (e) { if (!/duplicate column/i.test(String(e && e.message))) throw e; } }
   snapInit[sym] = true;
 }
+// Event triggers (triggers.js): every fired event is logged here; sent=1 only after a successful POST (sending is gated off).
+let trgInit = false;
+async function trgTable(env) {
+  if (trgInit) return;
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS trigger_events (date TEXT NOT NULL, ts TEXT NOT NULL, sym TEXT NOT NULL, type TEXT NOT NULL, ekey TEXT NOT NULL, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, src TEXT NOT NULL DEFAULT 'live', PRIMARY KEY (sym, date, ekey, src))"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS trigger_events_date ON trigger_events (date, ts)"),
+  ]);
+  trgInit = true;
+}
+// Baselines for triggers, read once per ET day per symbol: cumulative vol by hm over the last 10 prior sessions (SPY), and the prior session's opts.
+GEX_H.trgLoad = async (env, sym, date) => {
+  await snapTables(env, sym); const T = SNAP_SYMS[sym];
+  let vol = null;
+  if (sym === "SPY") {
+    const { results } = await env.DB.prepare(`SELECT date, hm, vol FROM board_snap_min WHERE vol IS NOT NULL AND date < ? AND date IN (SELECT DISTINCT date FROM board_snap_min WHERE vol IS NOT NULL AND date < ? AND date NOT LIKE 'test-%' ORDER BY date DESC LIMIT 10)`).bind(date, date).all();
+    vol = {}; for (const r of results || []) (vol[r.hm] || (vol[r.hm] = [])).push(r.vol);
+  }
+  const pd = await env.DB.prepare(`SELECT MAX(date) d FROM board_snap_min${T} WHERE date < ? AND opts IS NOT NULL AND date NOT LIKE 'test-%'`).bind(date).first();
+  let prior = null;
+  if (pd && pd.d) {
+    const { results } = await env.DB.prepare(`SELECT hm, opts FROM board_snap_min${T} WHERE date = ? AND opts IS NOT NULL`).bind(pd.d).all();
+    prior = {}; for (const r of results || []) { try { const o = JSON.parse(r.opts), m = {}; for (const x of o.rows || []) m[`${x[0]}|${x[1]}`] = x[5]; prior[r.hm] = m; } catch {} }
+  }
+  return { vol, prior, priorDate: pd ? pd.d : null };
+};
+GEX_H.trgSent = async (env, sym, ts, ekey) => { await env.DB.prepare("UPDATE trigger_events SET sent = 1 WHERE sym = ? AND ts = ? AND ekey = ?").bind(sym, ts, ekey).run(); };
 GEX_H.snapWrite = async (env, rows, purge, sym = "SPY") => {
   await snapTables(env, sym); const T = SNAP_SYMS[sym];
   const stmts = rows.map(([sql, ...a]) => env.DB.prepare(sql).bind(...a));
@@ -624,6 +653,15 @@ async function snapRead(env, url, rest) {
       return new Response(lines.join("\n") + "\n", { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="opts_${sym}_${date}.csv"`, "cache-control": "no-store", "x-robots-tag": "noindex" } });
     }
     return J({ ok: true, sym, date, n: mins.length, cols: ["strike", "side", "bid", "ask", "mark", "vol", "oi"], minutes: mins.map(({ cols, ...m }) => m) });
+  }
+  if (rest === "/snaps/triggers") {
+    await trgTable(env);
+    const all = !q("sym"), type = (q("type") || "").replace(/[%_]/g, "") + "%";
+    if (!okD(date)) return J({ ok: false, error: "date=YYYY-MM-DD required" }, 400);
+    const { results } = await env.DB.prepare(`SELECT date, ts, sym, type, payload, sent, src FROM trigger_events WHERE date = ? AND (? OR sym = ?) AND type LIKE ? ORDER BY ts, sym LIMIT 5000`).bind(date, all ? 1 : 0, sym, type).all();
+    const ev = results.map(r => { let p = null; try { p = JSON.parse(r.payload); } catch {} return { ts: r.ts, sym: r.sym, type: r.type, sent: r.sent, src: r.src, payload: p }; });
+    const counts = {}; for (const e of ev) counts[e.type] = (counts[e.type] || 0) + 1;
+    return J({ ok: true, date, sym: all ? "all" : sym, n: ev.length, counts, events: ev });
   }
   if (rest === "/snaps/events") {
     const ts = q("ts");

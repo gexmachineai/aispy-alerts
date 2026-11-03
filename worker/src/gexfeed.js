@@ -6,6 +6,7 @@
 export const WINDOW = 15, WALL_K = 10000, METER_K = 200000, SIG_K = 100000, BLOCK_FRAC = 0.5;
 const TRADIER = "https://api.tradier.com/v1";
 import { wakeEval, wakePayload, route as wakeRoute } from "./wake.js";
+import { trgEval, trgTick, newTrg } from "./triggers.js";
 /** D1 helpers injected by index.js (slotStmts, shadowBatch, storeLive). */
 export const H = {};
 const HTTP_TIMEOUT_MS = 8000;
@@ -459,7 +460,8 @@ export class GexFeed {
       if (!manual || opts.store) { await this.state.storage.put("board_latest", body); await H.storeSym(this.env, cfg.sym, b, body); }
       let lw = [];
       if (!manual && cfg.snap) { try { lw = await this.wake(b, f.vol, tasks, cfg.sym); } catch (e) { console.warn("wake", cfg.sym, e && e.message); } }
-      if (!manual && cfg.snap) { try { const sp = await this.snap(b, body, false, lw, cfg.sym); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
+      if (!manual && cfg.snap) { try { lw = lw.concat(await this.triggers(b, f.vol, cfg.sym, tasks)); } catch (e) { console.warn("triggers", cfg.sym, e && e.message); } }
+      if (!manual && cfg.snap) { try { const sp = await this.snap(b, body, false, lw, cfg.sym, f.vol); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
     } else {
     const prev = await this.state.storage.get("board_shadow_latest");
     await this.state.storage.put("board_shadow_latest", body);
@@ -483,7 +485,8 @@ export class GexFeed {
     }
     let wrows = [];
     if (!manual) { try { wrows = await this.wake(b, f.vol, tasks); } catch (e) { console.warn("wake", e && e.message); } }
-    if (!manual || opts.snapTest) { try { const sp = await this.snap(b, body, !!opts.snapTest, wrows); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
+    if (!manual) { try { wrows = wrows.concat(await this.triggers(b, f.vol, "SPY", tasks)); } catch (e) { console.warn("triggers", e && e.message); } }
+    if (!manual || opts.snapTest) { try { const sp = await this.snap(b, body, !!opts.snapTest, wrows, "SPY", f.vol); if (sp) tasks.push(sp); } catch (e) { console.warn("snap", e && e.message); } }
     }
     await Promise.all(tasks);
     const tEnd = Date.now();
@@ -531,7 +534,43 @@ export class GexFeed {
     if (rows.length) await H.snapWrite(this.env, rows, false);
     return { ok: true, age_s: age, stale: true, logged: rows.length };
   }
-  async snap(b, body, test, extra = [], sym = "SPY") {
+  /** Event triggers (triggers.js): once per ET minute, 07:30-16:00 trading days. Returns trigger_events rows for the snap batch.
+   *  Baselines are loaded from D1 in the background (never awaited here); dedupe state persists in DO storage "trg".
+   *  POST only if TRIGGERS_ENABLED==="1" AND GEXM_WEBHOOK_URL AND GEXM_WEBHOOK_KEY (all unset = log to D1 only). */
+  async triggers(b, vol, sym, tasks) {
+    try {
+      const now = Date.now(), p = etParts(now);
+      if (!inSession(p)) return [];
+      if (!this.trg || this.trg.day !== p.date) { const s = await this.state.storage.get("trg"); this.trg = s && s.day === p.date ? s : newTrg(p.date); }
+      if (this.trg.mk === p.hm) { trgTick(this.trg, b.spot, p.h, p.mi); return []; }   // not a new minute: memory-only bar tracking
+      const tb = this.trgB;
+      if ((!tb || tb.date !== p.date) && (!this.trgLoading || now - this.trgLoading > 300e3) && H.trgLoad) {
+        this.trgLoading = now;
+        H.trgLoad(this.env, sym, p.date).then(x => { this.trgB = { date: p.date, ...x }; this.trgLoading = 0; console.log(JSON.stringify({ gexfeed: "trg_base", sym, date: p.date, vol_hms: x.vol ? Object.keys(x.vol).length : 0, prior: x.priorDate })); })
+          .catch(e => console.warn("trg base", sym, e && e.message));
+      }
+      const base = this.trgB && this.trgB.date === p.date ? this.trgB : null;
+      const r = trgEval(this.trg, { sym, b, vol: Number.isFinite(vol) ? vol : null, date: p.date, hm: p.hm, h: p.h, mi: p.mi, rth: p.secs >= RTH_START && !b.premarket, base });
+      this.trg = r.st;
+      for (const l of r.logs) console.log(JSON.stringify({ gexfeed: "trg_skip", sym, msg: l }));
+      tasks.push(this.state.storage.put("trg", r.st));
+      const ts = `${p.date}T${p.hm}:${String(p.s).padStart(2, "0")}`, rows = [];
+      const on = this.env.TRIGGERS_ENABLED === "1" && this.env.GEXM_WEBHOOK_URL && this.env.GEXM_WEBHOOK_KEY;
+      for (const e of r.events) {
+        const body = JSON.stringify(e.payload);
+        rows.push(["INSERT OR IGNORE INTO trigger_events (date, ts, sym, type, ekey, payload, sent, src) VALUES (?, ?, ?, ?, ?, ?, 0, 'live')", p.date, ts, sym, e.type, e.key, body]);
+        if (on) {   // gated OFF: secrets are not set
+          const env = this.env;
+          this.state.waitUntil(fetch(env.GEXM_WEBHOOK_URL, { method: "POST", body, headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.GEXM_WEBHOOK_KEY } })
+            .then(x => { console.log("trigger POST", e.type, x.status); if (x.ok && H.trgSent) return H.trgSent(env, sym, ts, e.key); })
+            .catch(err => console.warn("trigger POST failed", e.type, err && err.name)));
+        }
+      }
+      if (r.events.length) console.log(JSON.stringify({ gexfeed: "trg", sym, hm: p.hm, types: r.events.map(e => e.type) }));
+      return rows;
+    } catch (e) { console.warn("triggers", sym, e && e.message); return []; }
+  }
+  async snap(b, body, test, extra = [], sym = "SPY", vol = null) {
     const T = sym === "SPY" ? "" : "_" + sym.toLowerCase();
     const p = etParts(Date.now()), g = typeof b.green_count === "number" ? b.green_count : null;
     const st = this.snapSt = this.snapSt || (await this.state.storage.get("snap")) || { min: null, g: null, purged: null };
@@ -544,7 +583,7 @@ export class GexFeed {
         for (const r of (b.strikes || [])) { if (Math.abs(r.strike - sp) > 5) continue;
           for (const sd of ["call", "put"]) { const c = r[sd] || {}; o.push([r.strike, sd[0], c.bid ?? 0, c.ask ?? 0, c.mark ?? 0, c.volume ?? 0, c.oi ?? 0]); } }
         opts = JSON.stringify({ spot: sp, exp: b.expiration ?? null, cols: ["strike", "side", "bid", "ask", "mark", "vol", "oi"], rows: o }); } catch (e) { opts = null; } }
-      stmts.push([`INSERT OR IGNORE INTO board_snap_min${T} (date, hm, ts, green, body, opts) VALUES (?, ?, ?, ?, ?, ?)`, date, p.hm, ts, g, body, opts]);
+      stmts.push([`INSERT OR IGNORE INTO board_snap_min${T} (date, hm, ts, green, body, opts, vol) VALUES (?, ?, ?, ?, ?, ?, ?)`, date, p.hm, ts, g, body, opts, Number.isFinite(vol) && vol > 0 ? vol : null]);
     }
     let ev = null;
     if (g !== null) { if ((st.g === null || st.g < 3) && g >= 3) ev = "green3"; if (g === 5 && st.g !== 5) ev = ev ? "green3+5" : "green5"; }
