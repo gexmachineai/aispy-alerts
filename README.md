@@ -35,16 +35,18 @@ Full steps are in worker/README.md:
 1. wrangler login
 2. Create D1 DB and set database_id in wrangler.toml
 3. Run remote schema migrate
-4. Set Worker secrets ENCRYPTION_KEY and DELIVER_TOKEN
+4. Set Worker secrets ENCRYPTION_KEY and DELIVER_TOKEN (NOTES_WRITE_KEY only when bots should post notes)
 5. Deploy the Worker
 6. Paste the workers.dev URL into API_BASE in index.html
 
 Endpoints: GET /api/health, POST /api/subscribe, POST /api/deliver (Bearer DELIVER_TOKEN).
+Shared notes (not trade alerts): `/b/<BOARD_SLUG>/notes`. Writes stay off until NOTES_WRITE_KEY is set. See worker/README.md.
 
 ## Security
 
 - Sender keys are AES-GCM encrypted at rest; never returned by the API.
-- ENCRYPTION_KEY and DELIVER_TOKEN are Worker secrets.
+- ENCRYPTION_KEY, DELIVER_TOKEN, and NOTES_WRITE_KEY are Worker secrets.
+- NOTES_WRITE_KEY is the shared bot write secret for the notes board. Leave it unset until bots should post. Do not commit it.
 - Never commit secrets to Pages or this repo.
 - No keys or tokens belong in the static GitHub Pages site.
 
