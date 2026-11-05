@@ -1,5 +1,6 @@
 import { BOARD_HTML } from "./board_html.js";
 import { GexFeed, H as GEX_H } from "./gexfeed.js";
+import { handleNotesGet, handleNotesPost } from "./notes.js";
 export { GexFeed };
 /**
  * AISPYALERTS API — subscribe (webhook + email) + deliver fan-out
@@ -783,12 +784,16 @@ async function handleShadowApi(request, env, ctx, path) {
   return privResp(JSON.stringify({ ok: false, error: "Not found" }), 404, "application/json");
 }
 async function handlePrivateBoard(request, env, url, rest, ctx) {
+  // Bot notes: write with Bearer NOTES_WRITE_KEY only. Reads use the board password below.
+  const notesPath = rest === "/notes" || rest === "/notes/";
+  if (notesPath && request.method === "POST") return handleNotesPost(request, env);
   if (!boardAuthOk(request, env)) {
     return privResp("Unauthorized", 401, "text/plain; charset=utf-8", { "WWW-Authenticate": 'Basic realm="board", charset="UTF-8"' });
   }
   if (request.method !== "GET" && request.method !== "HEAD") return privResp("Method not allowed", 405, "text/plain");
   if (rest === "") return privResp(null, 301, "text/plain", { Location: url.pathname + "/" });
   if (rest === "/") return privResp(BOARD_HTML, 200, "text/html; charset=utf-8");
+  if (notesPath) return handleNotesGet(url, env);
   if (rest === "/shadow" || rest === "/shadow/latest") return shadowLatest(env, ctx, "b");
   const xs = reqSym(url);
   if (xs && (rest === "/latest" || rest === "/history" || rest === "/history15")) return symBoardRead(env, url, rest, ctx, xs);
